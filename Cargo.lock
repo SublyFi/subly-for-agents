@@ -7503,6 +7503,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anchor-client",
+ "arcis-compiler",
  "async-trait",
  "aws-nitro-enclaves-nsm-api",
  "axum",

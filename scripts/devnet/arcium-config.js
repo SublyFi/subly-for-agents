@@ -8,7 +8,12 @@ const {
   loadProvider,
   loadState,
   saveState,
+  updateGeneratedEnv,
 } = require("./common");
+const {
+  computeArciumDomainHashParts,
+  fetchArciumMxePublicKeyWithRetry,
+} = require("./arcium-utils");
 
 const ARCIUM_STATUS = {
   disabled: 0,
@@ -93,6 +98,36 @@ function decodeX25519PublicKey(value) {
   return Array.from(bytes);
 }
 
+function decodeFixedBytes(name, value, length = 32) {
+  if (!value) {
+    throw new Error(`${name} is required`);
+  }
+  const normalized = String(value).trim();
+  const bytes = /^[0-9a-fA-F]{64}$/.test(normalized)
+    ? Buffer.from(normalized, "hex")
+    : Buffer.from(normalized, "base64");
+  if (bytes.length !== length) {
+    throw new Error(`${name} must decode to ${length} bytes`);
+  }
+  return new Uint8Array(bytes);
+}
+
+function configuredMxePublicKey(env) {
+  if (env.SUBLY402_ARCIUM_MXE_PUBLIC_KEY_HEX) {
+    return decodeFixedBytes(
+      "SUBLY402_ARCIUM_MXE_PUBLIC_KEY_HEX",
+      env.SUBLY402_ARCIUM_MXE_PUBLIC_KEY_HEX
+    );
+  }
+  if (env.SUBLY402_ARCIUM_MXE_PUBLIC_KEY_B64) {
+    return decodeFixedBytes(
+      "SUBLY402_ARCIUM_MXE_PUBLIC_KEY_B64",
+      env.SUBLY402_ARCIUM_MXE_PUBLIC_KEY_B64
+    );
+  }
+  return null;
+}
+
 function bytesToHex(bytes) {
   return Buffer.from(bytes).toString("hex");
 }
@@ -161,6 +196,17 @@ function arciumStateFromAccount(account, arciumConfigPda) {
 
 function statusRequiresDeployment(status) {
   return status === ARCIUM_STATUS.mirror || status === ARCIUM_STATUS.enforced;
+}
+
+async function resolveMxePublicKey(env, provider, programId) {
+  const configured = configuredMxePublicKey(env);
+  if (configured) {
+    return configured;
+  }
+  return fetchArciumMxePublicKeyWithRetry(provider, programId, {
+    attempts: Number(env.SUBLY402_ARCIUM_MXE_FETCH_ATTEMPTS || "20"),
+    delayMs: Number(env.SUBLY402_ARCIUM_MXE_FETCH_DELAY_MS || "500"),
+  });
 }
 
 function buildDesiredConfig(env, state, status, options = {}) {
@@ -303,6 +349,35 @@ async function setArciumStatus(
     .rpc();
 }
 
+async function updateArciumDeployment(
+  program,
+  provider,
+  vaultConfigPda,
+  arciumConfigPda,
+  desired
+) {
+  if (!program.methods.updateArciumDeployment) {
+    throw new Error(
+      "Generated IDL is missing updateArciumDeployment. Run anchor build and redeploy before rotating Arcium config."
+    );
+  }
+  await program.methods
+    .updateArciumDeployment(
+      desired.arciumProgramId,
+      desired.mxeAccount,
+      desired.clusterAccount,
+      desired.mempoolAccount,
+      desired.compDefVersion,
+      desired.teeX25519Pubkey
+    )
+    .accountsPartial({
+      governance: provider.wallet.publicKey,
+      vaultConfig: vaultConfigPda,
+      arciumConfig: arciumConfigPda,
+    })
+    .rpc();
+}
+
 async function main() {
   loadDefaultEnvFiles();
 
@@ -415,10 +490,49 @@ async function main() {
     }
     const mismatches = findConfigMismatches(existingArciumConfig, desired);
     if (mismatches.length > 0) {
+      const deploymentFields = new Set([
+        "arciumProgramId",
+        "mxeAccount",
+        "clusterAccount",
+        "mempoolAccount",
+        "compDefVersion",
+        "teeX25519Pubkey",
+      ]);
+      const canRotateDeployment =
+        process.env.SUBLY402_ARCIUM_ALLOW_CONFIG_ROTATION === "1" &&
+        mismatches.every((field) => deploymentFields.has(field));
+      if (canRotateDeployment) {
+        await updateArciumDeployment(
+          program,
+          provider,
+          vaultConfigPda,
+          arciumConfigPda,
+          desired
+        );
+        statusTransitions.push("deployment-updated");
+        existingArciumConfig = await program.account.arciumConfig.fetch(
+          arciumConfigPda
+        );
+      } else {
+        const suffix = mismatches.every((field) => deploymentFields.has(field))
+          ? " Set SUBLY402_ARCIUM_ALLOW_CONFIG_ROTATION=1 after redeploying a program that includes updateArciumDeployment."
+          : "";
+        throw new Error(
+          `Existing ArciumConfig differs in immutable fields: ${mismatches.join(
+            ", "
+          )}. Deploy a new vault or add an explicit config rotation instruction.${suffix}`
+        );
+      }
+    }
+    const remainingMismatches = findConfigMismatches(
+      existingArciumConfig,
+      desired
+    );
+    if (remainingMismatches.length > 0) {
       throw new Error(
-        `Existing ArciumConfig differs in immutable fields: ${mismatches.join(
+        `Existing ArciumConfig still differs after rotation: ${remainingMismatches.join(
           ", "
-        )}. Deploy a new vault or add an explicit config rotation instruction.`
+        )}.`
       );
     }
   }
@@ -453,13 +567,74 @@ async function main() {
     arciumConfig = await program.account.arciumConfig.fetch(arciumConfigPda);
   }
 
+  const mxePublicKey = statusRequiresDeployment(
+    numberValue(arciumConfig.status)
+  )
+    ? await resolveMxePublicKey(process.env, provider, program.programId)
+    : null;
+  const mxePublicKeyHex = mxePublicKey ? bytesToHex(mxePublicKey) : undefined;
+  const vaultConfigAccount = statusRequiresDeployment(
+    numberValue(arciumConfig.status)
+  )
+    ? await program.account.vaultConfig.fetch(vaultConfigPda)
+    : null;
+  const budgetDomainHash = vaultConfigAccount
+    ? computeArciumDomainHashParts({
+        instructionKind: "authorize_budget",
+        programId: program.programId,
+        vaultConfig: vaultConfigPda,
+        vaultConfigAccount,
+        arciumConfigAccount: arciumConfig,
+      })
+    : null;
+  const withdrawalDomainHash = vaultConfigAccount
+    ? computeArciumDomainHashParts({
+        instructionKind: "authorize_withdrawal",
+        programId: program.programId,
+        vaultConfig: vaultConfigPda,
+        vaultConfigAccount,
+        arciumConfigAccount: arciumConfig,
+      })
+    : null;
   const nextState = {
     ...state,
     arciumConfig: arciumConfigPda.toBase58(),
     arciumStatus: statusName(numberValue(arciumConfig.status)),
-    arcium: arciumStateFromAccount(arciumConfig, arciumConfigPda),
+    arcium: {
+      ...arciumStateFromAccount(arciumConfig, arciumConfigPda),
+      ...(mxePublicKeyHex ? { mxePublicKeyHex } : {}),
+      ...(budgetDomainHash
+        ? {
+            authorizeBudgetDomainHash: {
+              lo: budgetDomainHash.lo.toString(),
+              hi: budgetDomainHash.hi.toString(),
+            },
+          }
+        : {}),
+      ...(withdrawalDomainHash
+        ? {
+            authorizeWithdrawalDomainHash: {
+              lo: withdrawalDomainHash.lo.toString(),
+              hi: withdrawalDomainHash.hi.toString(),
+            },
+          }
+        : {}),
+    },
   };
   saveState(nextState);
+  if (mxePublicKeyHex && budgetDomainHash && withdrawalDomainHash) {
+    updateGeneratedEnv({
+      SUBLY402_ARCIUM_MXE_PUBLIC_KEY_HEX: mxePublicKeyHex,
+      SUBLY402_ARCIUM_AUTHORIZE_BUDGET_DOMAIN_HASH_LO:
+        budgetDomainHash.lo.toString(),
+      SUBLY402_ARCIUM_AUTHORIZE_BUDGET_DOMAIN_HASH_HI:
+        budgetDomainHash.hi.toString(),
+      SUBLY402_ARCIUM_AUTHORIZE_WITHDRAWAL_DOMAIN_HASH_LO:
+        withdrawalDomainHash.lo.toString(),
+      SUBLY402_ARCIUM_AUTHORIZE_WITHDRAWAL_DOMAIN_HASH_HI:
+        withdrawalDomainHash.hi.toString(),
+    });
+  }
 
   console.log(
     JSON.stringify(
@@ -488,10 +663,14 @@ module.exports = {
   arciumStateFromAccount,
   buildDesiredConfig,
   bytesToHex,
+  configuredMxePublicKey,
+  decodeFixedBytes,
   decodeX25519PublicKey,
   findConfigMismatches,
   numberValue,
   parseStatus,
+  resolveMxePublicKey,
   statusRequiresDeployment,
   statusName,
+  updateArciumDeployment,
 };

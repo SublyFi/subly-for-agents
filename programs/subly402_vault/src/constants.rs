@@ -53,7 +53,7 @@ pub const RECONCILE_REPORT_SCALARS: usize = 7;
 pub const WITHDRAWAL_REQUEST_SCALARS: usize = 5;
 pub const WITHDRAWAL_REPORT_SCALARS: usize = 5;
 pub const WITHDRAWAL_GRANT_STATE_SCALARS: usize = 7;
-pub const WITHDRAWAL_GRANT_SCALARS: usize = 6;
+pub const WITHDRAWAL_GRANT_SCALARS: usize = 15;
 
 pub const COMP_DEF_OFFSET_INIT_AGENT_VAULT: u32 = comp_def_offset("init_agent_vault");
 pub const COMP_DEF_OFFSET_APPLY_DEPOSIT: u32 = comp_def_offset("apply_deposit");

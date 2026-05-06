@@ -721,6 +721,9 @@ mod tests {
             attestation_is_local_dev: true,
             provider_mtls_enabled: false,
             outbound: crate::outbound::OutboundTransport::direct(),
+            arcium_grant_decryptor: None,
+            arcium_mxe_public_key: None,
+            arcium_domain_hashes: None,
         })
     }
 

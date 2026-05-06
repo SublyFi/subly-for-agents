@@ -113,6 +113,26 @@ pub mod subly402_vault {
         instructions::set_arcium_status::handler(ctx, status)
     }
 
+    pub fn update_arcium_deployment(
+        ctx: Context<UpdateArciumDeployment>,
+        arcium_program_id: Pubkey,
+        mxe_account: Pubkey,
+        cluster_account: Pubkey,
+        mempool_account: Pubkey,
+        comp_def_version: u32,
+        tee_x25519_pubkey: [u8; 32],
+    ) -> Result<()> {
+        instructions::update_arcium_deployment::handler(
+            ctx,
+            arcium_program_id,
+            mxe_account,
+            cluster_account,
+            mempool_account,
+            comp_def_version,
+            tee_x25519_pubkey,
+        )
+    }
+
     pub fn record_yield_epoch(
         ctx: Context<RecordYieldEpoch>,
         epoch_id: u64,

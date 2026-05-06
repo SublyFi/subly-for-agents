@@ -61,6 +61,9 @@ pub struct AppState {
     pub attestation_is_local_dev: bool,
     pub provider_mtls_enabled: bool,
     pub outbound: OutboundTransport,
+    pub arcium_grant_decryptor: Option<Arc<crate::arcium::ArciumGrantDecryptor>>,
+    pub arcium_mxe_public_key: Option<[u8; 32]>,
+    pub arcium_domain_hashes: Option<crate::arcium::ArciumGrantDomainHashes>,
 }
 
 // ── Attestation ──
@@ -1977,20 +1980,29 @@ pub struct LoadArciumBudgetGrantResponse {
     pub remaining: u64,
 }
 
-pub async fn post_load_arcium_budget_grant(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<LoadArciumBudgetGrantRequest>,
-) -> Result<Json<LoadArciumBudgetGrantResponse>, EnclaveError> {
-    let client = Pubkey::from_str(&req.client).map_err(|_| EnclaveError::ClientNotFound)?;
-    let grant = ArciumBudgetGrant {
-        grant_id: req.grant_id.clone(),
-        client,
-        budget_id: req.budget_id,
-        request_nonce: req.request_nonce,
-        remaining: req.remaining,
-        expires_at: req.expires_at,
-    };
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadEncryptedArciumBudgetGrantRequest {
+    pub grant_id: String,
+    pub vault_config: String,
+    pub client: String,
+    pub budget_id: u64,
+    pub request_nonce: u64,
+    pub expires_at: i64,
+    pub state_version_at_authorization: u64,
+    pub domain_hash_lo: u128,
+    pub domain_hash_hi: u128,
+    pub tee_x25519_pubkey: [u8; 32],
+    pub mxe_public_key: [u8; 32],
+    pub grant_ciphertexts: Vec<[u8; 32]>,
+    pub grant_nonce: [u8; 16],
+}
 
+async fn load_arcium_budget_grant_locked(
+    state: Arc<AppState>,
+    grant: ArciumBudgetGrant,
+) -> Result<Json<LoadArciumBudgetGrantResponse>, EnclaveError> {
+    let grant_id = grant.grant_id.clone();
     let applied_remaining;
     {
         let _persist_guard = state.persistence_lock.lock().await;
@@ -2012,9 +2024,190 @@ pub async fn post_load_arcium_budget_grant(
 
     Ok(Json(LoadArciumBudgetGrantResponse {
         ok: true,
-        grant_id: req.grant_id,
+        grant_id,
         remaining: applied_remaining,
     }))
+}
+
+pub async fn post_load_arcium_budget_grant(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<LoadArciumBudgetGrantRequest>,
+) -> Result<Json<LoadArciumBudgetGrantResponse>, EnclaveError> {
+    reject_plaintext_arcium_grant_load_in_enforced_mode(&state)?;
+    let client = Pubkey::from_str(&req.client).map_err(|_| EnclaveError::ClientNotFound)?;
+    load_arcium_budget_grant_locked(
+        state,
+        ArciumBudgetGrant {
+            grant_id: req.grant_id,
+            client,
+            budget_id: req.budget_id,
+            request_nonce: req.request_nonce,
+            remaining: req.remaining,
+            expires_at: req.expires_at,
+        },
+    )
+    .await
+}
+
+pub async fn post_load_encrypted_arcium_budget_grant(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<LoadEncryptedArciumBudgetGrantRequest>,
+) -> Result<Json<LoadArciumBudgetGrantResponse>, EnclaveError> {
+    let decryptor = state
+        .arcium_grant_decryptor
+        .as_ref()
+        .ok_or_else(|| EnclaveError::Internal("Arcium grant decryptor is not configured".into()))?;
+    let grant_pubkey = Pubkey::from_str(&req.grant_id)
+        .map_err(|_| EnclaveError::Internal("Invalid Arcium budget grant pubkey".into()))?;
+    let vault_config = Pubkey::from_str(&req.vault_config)
+        .map_err(|_| EnclaveError::Internal("Invalid Arcium vault config pubkey".into()))?;
+    if vault_config != state.vault.vault_config {
+        return Err(EnclaveError::VaultNotActive);
+    }
+    require_arcium_mxe_public_key(&state, req.mxe_public_key)?;
+    let expected_domain_hash = require_arcium_budget_domain_hash(&state)?;
+    let client = Pubkey::from_str(&req.client).map_err(|_| EnclaveError::ClientNotFound)?;
+    let expires_at_u64 = u64::try_from(req.expires_at)
+        .map_err(|_| EnclaveError::Internal("Arcium budget grant expiresAt is negative".into()))?;
+    require_equal(
+        "requestDomainHashLo",
+        req.domain_hash_lo,
+        expected_domain_hash.lo,
+    )?;
+    require_equal(
+        "requestDomainHashHi",
+        req.domain_hash_hi,
+        expected_domain_hash.hi,
+    )?;
+    let view = decryptor
+        .decrypt_budget_grant_view(
+            req.tee_x25519_pubkey,
+            req.mxe_public_key,
+            &req.grant_ciphertexts,
+            req.grant_nonce,
+        )
+        .map_err(|error| {
+            EnclaveError::Internal(format!("Arcium budget grant decrypt failed: {error}"))
+        })?;
+    if !view.approved {
+        return Err(EnclaveError::InsufficientArciumBudget);
+    }
+    require_equal("budgetId", view.budget_id, req.budget_id)?;
+    require_equal("requestNonce", view.request_nonce, req.request_nonce)?;
+    require_equal("expiresAt", view.expires_at, expires_at_u64)?;
+    require_equal(
+        "stateVersion",
+        view.state_version,
+        req.state_version_at_authorization,
+    )?;
+    require_equal("domainHashLo", view.domain_hash_lo, expected_domain_hash.lo)?;
+    require_equal("domainHashHi", view.domain_hash_hi, expected_domain_hash.hi)?;
+    require_pubkey_split(
+        "vaultConfig",
+        view.vault_config_lo,
+        view.vault_config_hi,
+        &vault_config,
+    )?;
+    require_pubkey_split("client", view.client_lo, view.client_hi, &client)?;
+    require_pubkey_split(
+        "budgetGrant",
+        view.budget_grant_lo,
+        view.budget_grant_hi,
+        &grant_pubkey,
+    )?;
+
+    load_arcium_budget_grant_locked(
+        state,
+        ArciumBudgetGrant {
+            grant_id: req.grant_id,
+            client,
+            budget_id: view.budget_id,
+            request_nonce: view.request_nonce,
+            remaining: view.remaining,
+            expires_at: req.expires_at,
+        },
+    )
+    .await
+}
+
+fn require_equal<T>(field: &str, actual: T, expected: T) -> Result<(), EnclaveError>
+where
+    T: Eq + std::fmt::Display,
+{
+    if actual != expected {
+        return Err(EnclaveError::Internal(format!(
+            "Arcium {field} mismatch: actual={actual} expected={expected}"
+        )));
+    }
+    Ok(())
+}
+
+fn split_pubkey_u128(pubkey: &Pubkey) -> (u128, u128) {
+    let bytes = pubkey.to_bytes();
+    let mut lo = [0u8; 16];
+    let mut hi = [0u8; 16];
+    lo.copy_from_slice(&bytes[..16]);
+    hi.copy_from_slice(&bytes[16..]);
+    (u128::from_le_bytes(lo), u128::from_le_bytes(hi))
+}
+
+fn require_pubkey_split(
+    field: &str,
+    actual_lo: u128,
+    actual_hi: u128,
+    expected: &Pubkey,
+) -> Result<(), EnclaveError> {
+    let (expected_lo, expected_hi) = split_pubkey_u128(expected);
+    if actual_lo != expected_lo || actual_hi != expected_hi {
+        return Err(EnclaveError::Internal(format!(
+            "Arcium {field} split does not match decrypted grant"
+        )));
+    }
+    Ok(())
+}
+
+fn require_arcium_mxe_public_key(
+    state: &Arc<AppState>,
+    actual: [u8; 32],
+) -> Result<(), EnclaveError> {
+    let expected = state
+        .arcium_mxe_public_key
+        .ok_or_else(|| EnclaveError::Internal("Arcium MXE public key is not configured".into()))?;
+    if actual != expected {
+        return Err(EnclaveError::Internal(
+            "Arcium MXE public key mismatch".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn require_arcium_budget_domain_hash(
+    state: &Arc<AppState>,
+) -> Result<crate::arcium::ArciumDomainHashParts, EnclaveError> {
+    let hashes = state.arcium_domain_hashes.ok_or_else(|| {
+        EnclaveError::Internal("Arcium grant domain hashes are not configured".into())
+    })?;
+    Ok(hashes.authorize_budget)
+}
+
+fn require_arcium_withdrawal_domain_hash(
+    state: &Arc<AppState>,
+) -> Result<crate::arcium::ArciumDomainHashParts, EnclaveError> {
+    let hashes = state.arcium_domain_hashes.ok_or_else(|| {
+        EnclaveError::Internal("Arcium grant domain hashes are not configured".into())
+    })?;
+    Ok(hashes.authorize_withdrawal)
+}
+
+fn reject_plaintext_arcium_grant_load_in_enforced_mode(
+    state: &Arc<AppState>,
+) -> Result<(), EnclaveError> {
+    if state.vault.arcium_enforced() {
+        return Err(EnclaveError::Internal(
+            "Plaintext Arcium grant loading is disabled in enforced mode".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -2039,26 +2232,35 @@ pub struct LoadArciumWithdrawalGrantResponse {
     pub consumed: bool,
 }
 
-pub async fn post_load_arcium_withdrawal_grant(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<LoadArciumWithdrawalGrantRequest>,
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadEncryptedArciumWithdrawalGrantRequest {
+    pub grant_id: String,
+    pub vault_config: String,
+    pub client: String,
+    pub withdrawal_id: u64,
+    pub recipient_ata: String,
+    pub expires_at: i64,
+    pub state_version_at_authorization: u64,
+    pub domain_hash_lo: u128,
+    pub domain_hash_hi: u128,
+    pub tee_x25519_pubkey: [u8; 32],
+    pub mxe_public_key: [u8; 32],
+    pub grant_ciphertexts: Vec<[u8; 32]>,
+    pub grant_nonce: [u8; 16],
+    #[serde(default)]
+    pub consumed: bool,
+}
+
+async fn load_arcium_withdrawal_grant_locked(
+    state: Arc<AppState>,
+    grant: ArciumWithdrawalGrant,
 ) -> Result<Json<LoadArciumWithdrawalGrantResponse>, EnclaveError> {
-    if req.amount == 0 {
+    if grant.amount == 0 {
         return Err(EnclaveError::InsufficientArciumWithdrawalGrant);
     }
-    let client = Pubkey::from_str(&req.client).map_err(|_| EnclaveError::ClientNotFound)?;
-    let recipient_ata = Pubkey::from_str(&req.recipient_ata)
-        .map_err(|_| EnclaveError::Internal("Invalid recipient ATA".into()))?;
-    let grant = ArciumWithdrawalGrant {
-        grant_id: req.grant_id.clone(),
-        client,
-        withdrawal_id: req.withdrawal_id,
-        recipient_ata,
-        amount: req.amount,
-        expires_at: req.expires_at,
-        consumed: req.consumed,
-    };
-
+    let grant_id = grant.grant_id.clone();
+    let amount = grant.amount;
     let applied_consumed;
     {
         let _persist_guard = state.persistence_lock.lock().await;
@@ -2083,10 +2285,123 @@ pub async fn post_load_arcium_withdrawal_grant(
 
     Ok(Json(LoadArciumWithdrawalGrantResponse {
         ok: true,
-        grant_id: req.grant_id,
-        amount: req.amount,
+        grant_id,
+        amount,
         consumed: applied_consumed,
     }))
+}
+
+pub async fn post_load_arcium_withdrawal_grant(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<LoadArciumWithdrawalGrantRequest>,
+) -> Result<Json<LoadArciumWithdrawalGrantResponse>, EnclaveError> {
+    reject_plaintext_arcium_grant_load_in_enforced_mode(&state)?;
+    let client = Pubkey::from_str(&req.client).map_err(|_| EnclaveError::ClientNotFound)?;
+    let recipient_ata = Pubkey::from_str(&req.recipient_ata)
+        .map_err(|_| EnclaveError::Internal("Invalid recipient ATA".into()))?;
+    load_arcium_withdrawal_grant_locked(
+        state,
+        ArciumWithdrawalGrant {
+            grant_id: req.grant_id,
+            client,
+            withdrawal_id: req.withdrawal_id,
+            recipient_ata,
+            amount: req.amount,
+            expires_at: req.expires_at,
+            consumed: req.consumed,
+        },
+    )
+    .await
+}
+
+pub async fn post_load_encrypted_arcium_withdrawal_grant(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<LoadEncryptedArciumWithdrawalGrantRequest>,
+) -> Result<Json<LoadArciumWithdrawalGrantResponse>, EnclaveError> {
+    let decryptor = state
+        .arcium_grant_decryptor
+        .as_ref()
+        .ok_or_else(|| EnclaveError::Internal("Arcium grant decryptor is not configured".into()))?;
+    let grant_pubkey = Pubkey::from_str(&req.grant_id)
+        .map_err(|_| EnclaveError::Internal("Invalid Arcium withdrawal grant pubkey".into()))?;
+    let vault_config = Pubkey::from_str(&req.vault_config)
+        .map_err(|_| EnclaveError::Internal("Invalid Arcium vault config pubkey".into()))?;
+    if vault_config != state.vault.vault_config {
+        return Err(EnclaveError::VaultNotActive);
+    }
+    require_arcium_mxe_public_key(&state, req.mxe_public_key)?;
+    let expected_domain_hash = require_arcium_withdrawal_domain_hash(&state)?;
+    let client = Pubkey::from_str(&req.client).map_err(|_| EnclaveError::ClientNotFound)?;
+    let recipient_ata = Pubkey::from_str(&req.recipient_ata)
+        .map_err(|_| EnclaveError::Internal("Invalid recipient ATA".into()))?;
+    let expires_at_u64 = u64::try_from(req.expires_at).map_err(|_| {
+        EnclaveError::Internal("Arcium withdrawal grant expiresAt is negative".into())
+    })?;
+    require_equal(
+        "requestDomainHashLo",
+        req.domain_hash_lo,
+        expected_domain_hash.lo,
+    )?;
+    require_equal(
+        "requestDomainHashHi",
+        req.domain_hash_hi,
+        expected_domain_hash.hi,
+    )?;
+    let view = decryptor
+        .decrypt_withdrawal_grant_view(
+            req.tee_x25519_pubkey,
+            req.mxe_public_key,
+            &req.grant_ciphertexts,
+            req.grant_nonce,
+        )
+        .map_err(|error| {
+            EnclaveError::Internal(format!("Arcium withdrawal grant decrypt failed: {error}"))
+        })?;
+    if !view.approved {
+        return Err(EnclaveError::InsufficientArciumWithdrawalGrant);
+    }
+    require_equal("withdrawalId", view.withdrawal_id, req.withdrawal_id)?;
+    require_equal("expiresAt", view.expires_at, expires_at_u64)?;
+    require_equal(
+        "stateVersion",
+        view.state_version,
+        req.state_version_at_authorization,
+    )?;
+    require_equal("domainHashLo", view.domain_hash_lo, expected_domain_hash.lo)?;
+    require_equal("domainHashHi", view.domain_hash_hi, expected_domain_hash.hi)?;
+    require_pubkey_split(
+        "vaultConfig",
+        view.vault_config_lo,
+        view.vault_config_hi,
+        &vault_config,
+    )?;
+    require_pubkey_split("client", view.client_lo, view.client_hi, &client)?;
+    require_pubkey_split(
+        "withdrawalGrant",
+        view.withdrawal_grant_lo,
+        view.withdrawal_grant_hi,
+        &grant_pubkey,
+    )?;
+    require_pubkey_split(
+        "recipientAta",
+        view.recipient_lo,
+        view.recipient_hi,
+        &recipient_ata,
+    )?;
+
+    load_arcium_withdrawal_grant_locked(
+        state,
+        ArciumWithdrawalGrant {
+            grant_id: req.grant_id,
+            client,
+            withdrawal_id: view.withdrawal_id,
+            recipient_ata,
+            amount: view.amount,
+            expires_at: req.expires_at,
+            consumed: req.consumed,
+        },
+    )
+    .await
 }
 
 pub async fn post_seed_balance(
@@ -3084,6 +3399,10 @@ pub async fn post_channel_close(
 mod tests {
     use super::*;
     use crate::adaptor_sig::{self, AdaptorKeyPair};
+    use crate::arcium::{
+        encrypt_shared_scalars_for_test, public_key_from_private_key_for_test,
+        ArciumDomainHashParts, ArciumGrantDecryptor, ArciumGrantDomainHashes,
+    };
     use crate::provider_attestation::{
         build_local_dev_provider_attestation, test_policy, ProviderParticipantAttestationRequest,
     };
@@ -3137,7 +3456,12 @@ mod tests {
         }
     }
 
-    async fn make_app_state_with_mtls(provider_mtls_enabled: bool) -> (Arc<AppState>, PathBuf) {
+    async fn make_app_state_with_options(
+        provider_mtls_enabled: bool,
+        arcium_grant_decryptor: Option<Arc<ArciumGrantDecryptor>>,
+        arcium_mxe_public_key: Option<[u8; 32]>,
+        arcium_domain_hashes: Option<ArciumGrantDomainHashes>,
+    ) -> (Arc<AppState>, PathBuf) {
         let signing_key = SigningKey::generate(&mut OsRng);
         let usdc_mint = Pubkey::new_unique();
         let solana = SolanaRuntimeConfig {
@@ -3180,9 +3504,48 @@ mod tests {
                 attestation_is_local_dev: true,
                 provider_mtls_enabled,
                 outbound: crate::outbound::OutboundTransport::direct(),
+                arcium_grant_decryptor,
+                arcium_mxe_public_key,
+                arcium_domain_hashes,
             }),
             wal_path,
         )
+    }
+
+    async fn make_app_state_with_mtls(provider_mtls_enabled: bool) -> (Arc<AppState>, PathBuf) {
+        make_app_state_with_options(provider_mtls_enabled, None, None, None).await
+    }
+
+    async fn make_app_state_with_arcium_decryptor(
+        decryptor: Arc<ArciumGrantDecryptor>,
+        mxe_public_key: [u8; 32],
+        arcium_domain_hashes: ArciumGrantDomainHashes,
+    ) -> (Arc<AppState>, PathBuf) {
+        make_app_state_with_options(
+            false,
+            Some(decryptor),
+            Some(mxe_public_key),
+            Some(arcium_domain_hashes),
+        )
+        .await
+    }
+
+    fn test_arcium_domain_hashes(
+        budget_lo: u128,
+        budget_hi: u128,
+        withdrawal_lo: u128,
+        withdrawal_hi: u128,
+    ) -> ArciumGrantDomainHashes {
+        ArciumGrantDomainHashes {
+            authorize_budget: ArciumDomainHashParts {
+                lo: budget_lo,
+                hi: budget_hi,
+            },
+            authorize_withdrawal: ArciumDomainHashParts {
+                lo: withdrawal_lo,
+                hi: withdrawal_hi,
+            },
+        }
     }
 
     async fn make_app_state() -> (Arc<AppState>, PathBuf) {
@@ -3717,14 +4080,6 @@ mod tests {
             &settlement_token_account.to_string(),
         );
 
-        let _ = post_set_arcium_mode(
-            State(state.clone()),
-            Json(SetArciumModeRequest {
-                mode: "enforced".to_string(),
-            }),
-        )
-        .await
-        .unwrap();
         let _ = post_load_arcium_budget_grant(
             State(state.clone()),
             Json(LoadArciumBudgetGrantRequest {
@@ -3738,6 +4093,32 @@ mod tests {
         )
         .await
         .unwrap();
+        let _ = post_set_arcium_mode(
+            State(state.clone()),
+            Json(SetArciumModeRequest {
+                mode: "enforced".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        let plaintext_load_error = post_load_arcium_budget_grant(
+            State(state.clone()),
+            Json(LoadArciumBudgetGrantRequest {
+                grant_id: "budget-grant-plaintext-rejected".to_string(),
+                client: client.to_string(),
+                budget_id: 2,
+                request_nonce: 10,
+                remaining: 1_000_000,
+                expires_at: Utc::now().timestamp() + 600,
+            }),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(matches!(
+            plaintext_load_error,
+            EnclaveError::Internal(message) if message.contains("Plaintext Arcium grant loading")
+        ));
 
         state
             .deposit_detector
@@ -4091,6 +4472,248 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn encrypted_arcium_budget_grant_load_decrypts_inside_enclave() {
+        let tee_private_key = [3u8; 32];
+        let mxe_private_key = [5u8; 32];
+        let decryptor = Arc::new(ArciumGrantDecryptor::new(tee_private_key).unwrap());
+        let mxe_public_key = public_key_from_private_key_for_test(mxe_private_key);
+        let (state, wal_path) = make_app_state_with_arcium_decryptor(
+            decryptor.clone(),
+            mxe_public_key,
+            test_arcium_domain_hashes(31, 32, 43, 44),
+        )
+        .await;
+        let client = Pubkey::new_unique();
+        let grant_pubkey = Pubkey::new_unique();
+        let grant_id = grant_pubkey.to_string();
+        let budget_id = 19u64;
+        let request_nonce = 23u64;
+        let amount = 1_000u64;
+        let remaining = 777u64;
+        let expires_at = Utc::now().timestamp() + 600;
+        let expires_at_u64 = u64::try_from(expires_at).unwrap();
+        let state_version = 4u64;
+        let domain_hash_lo = 31u128;
+        let domain_hash_hi = 32u128;
+        let (vault_config_lo, vault_config_hi) = split_pubkey_u128(&state.vault.vault_config);
+        let (client_lo, client_hi) = split_pubkey_u128(&client);
+        let (grant_lo, grant_hi) = split_pubkey_u128(&grant_pubkey);
+        let grant_nonce = [9u8; 16];
+        let plaintexts = [
+            1,
+            u128::from(budget_id),
+            u128::from(request_nonce),
+            u128::from(amount),
+            u128::from(remaining),
+            u128::from(expires_at_u64),
+            u128::from(state_version),
+            domain_hash_lo,
+            domain_hash_hi,
+            vault_config_lo,
+            vault_config_hi,
+            client_lo,
+            client_hi,
+            grant_lo,
+            grant_hi,
+        ];
+        let grant_ciphertexts = encrypt_shared_scalars_for_test(
+            mxe_private_key,
+            decryptor.public_key(),
+            &plaintexts,
+            grant_nonce,
+        );
+        let build_request = |vault_config: Pubkey| LoadEncryptedArciumBudgetGrantRequest {
+            grant_id: grant_id.clone(),
+            vault_config: vault_config.to_string(),
+            client: client.to_string(),
+            budget_id,
+            request_nonce,
+            expires_at,
+            state_version_at_authorization: state_version,
+            domain_hash_lo,
+            domain_hash_hi,
+            tee_x25519_pubkey: decryptor.public_key(),
+            mxe_public_key,
+            grant_ciphertexts: grant_ciphertexts.clone(),
+            grant_nonce,
+        };
+
+        let wrong_vault_error = post_load_encrypted_arcium_budget_grant(
+            State(state.clone()),
+            Json(build_request(Pubkey::new_unique())),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(matches!(wrong_vault_error, EnclaveError::VaultNotActive));
+        let wrong_mxe_error = post_load_encrypted_arcium_budget_grant(
+            State(state.clone()),
+            Json(LoadEncryptedArciumBudgetGrantRequest {
+                mxe_public_key: [99u8; 32],
+                ..build_request(state.vault.vault_config)
+            }),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(matches!(
+            wrong_mxe_error,
+            EnclaveError::Internal(message) if message.contains("MXE public key mismatch")
+        ));
+        let wrong_domain_error = post_load_encrypted_arcium_budget_grant(
+            State(state.clone()),
+            Json(LoadEncryptedArciumBudgetGrantRequest {
+                domain_hash_lo: 99,
+                ..build_request(state.vault.vault_config)
+            }),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(matches!(
+            wrong_domain_error,
+            EnclaveError::Internal(message) if message.contains("requestDomainHashLo")
+        ));
+
+        let response = post_load_encrypted_arcium_budget_grant(
+            State(state.clone()),
+            Json(build_request(state.vault.vault_config)),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.0.remaining, remaining);
+        assert_eq!(
+            state
+                .vault
+                .arcium_budget_grants
+                .get(&grant_id)
+                .unwrap()
+                .remaining,
+            remaining
+        );
+
+        let _ = tokio::fs::remove_file(wal_path).await;
+    }
+
+    #[tokio::test]
+    async fn encrypted_arcium_withdrawal_grant_load_binds_decrypted_identity() {
+        let tee_private_key = [7u8; 32];
+        let mxe_private_key = [11u8; 32];
+        let decryptor = Arc::new(ArciumGrantDecryptor::new(tee_private_key).unwrap());
+        let mxe_public_key = public_key_from_private_key_for_test(mxe_private_key);
+        let (state, wal_path) = make_app_state_with_arcium_decryptor(
+            decryptor.clone(),
+            mxe_public_key,
+            test_arcium_domain_hashes(31, 32, 43, 44),
+        )
+        .await;
+        let client = Pubkey::new_unique();
+        let wrong_client = Pubkey::new_unique();
+        let recipient_ata = Pubkey::new_unique();
+        let grant_pubkey = Pubkey::new_unique();
+        let grant_id = grant_pubkey.to_string();
+        let withdrawal_id = 41u64;
+        let amount = 900u64;
+        let expires_at = Utc::now().timestamp() + 600;
+        let expires_at_u64 = u64::try_from(expires_at).unwrap();
+        let state_version = 6u64;
+        let domain_hash_lo = 43u128;
+        let domain_hash_hi = 44u128;
+        let (vault_config_lo, vault_config_hi) = split_pubkey_u128(&state.vault.vault_config);
+        let (client_lo, client_hi) = split_pubkey_u128(&client);
+        let (grant_lo, grant_hi) = split_pubkey_u128(&grant_pubkey);
+        let (recipient_lo, recipient_hi) = split_pubkey_u128(&recipient_ata);
+        let grant_nonce = [13u8; 16];
+        let plaintexts = [
+            1,
+            u128::from(withdrawal_id),
+            u128::from(amount),
+            u128::from(expires_at_u64),
+            u128::from(state_version),
+            domain_hash_lo,
+            domain_hash_hi,
+            vault_config_lo,
+            vault_config_hi,
+            client_lo,
+            client_hi,
+            grant_lo,
+            grant_hi,
+            recipient_lo,
+            recipient_hi,
+        ];
+        let grant_ciphertexts = encrypt_shared_scalars_for_test(
+            mxe_private_key,
+            decryptor.public_key(),
+            &plaintexts,
+            grant_nonce,
+        );
+        let build_request = |request_client: Pubkey| LoadEncryptedArciumWithdrawalGrantRequest {
+            grant_id: grant_id.clone(),
+            vault_config: state.vault.vault_config.to_string(),
+            client: request_client.to_string(),
+            withdrawal_id,
+            recipient_ata: recipient_ata.to_string(),
+            expires_at,
+            state_version_at_authorization: state_version,
+            domain_hash_lo,
+            domain_hash_hi,
+            tee_x25519_pubkey: decryptor.public_key(),
+            mxe_public_key,
+            grant_ciphertexts: grant_ciphertexts.clone(),
+            grant_nonce,
+            consumed: false,
+        };
+
+        let error = post_load_encrypted_arcium_withdrawal_grant(
+            State(state.clone()),
+            Json(build_request(wrong_client)),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(matches!(
+            error,
+            EnclaveError::Internal(message) if message.contains("client split")
+        ));
+        assert!(state
+            .vault
+            .arcium_withdrawal_grants
+            .get(&grant_id)
+            .is_none());
+        let wrong_mxe_error = post_load_encrypted_arcium_withdrawal_grant(
+            State(state.clone()),
+            Json(LoadEncryptedArciumWithdrawalGrantRequest {
+                mxe_public_key: [99u8; 32],
+                ..build_request(client)
+            }),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(matches!(
+            wrong_mxe_error,
+            EnclaveError::Internal(message) if message.contains("MXE public key mismatch")
+        ));
+        assert!(state
+            .vault
+            .arcium_withdrawal_grants
+            .get(&grant_id)
+            .is_none());
+
+        let response = post_load_encrypted_arcium_withdrawal_grant(
+            State(state.clone()),
+            Json(build_request(client)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.0.amount, amount);
+        assert!(!response.0.consumed);
+
+        let _ = tokio::fs::remove_file(wal_path).await;
+    }
+
+    #[tokio::test]
     async fn withdraw_auth_locks_balance_until_expiry() {
         let (state, wal_path) = make_app_state().await;
         let client_signing_key = SigningKey::generate(&mut OsRng);
@@ -4242,6 +4865,7 @@ mod tests {
             EnclaveError::InsufficientArciumWithdrawalGrant
         ));
 
+        state.vault.set_arcium_mode(ArciumAuthorityMode::Mirror);
         let grant_expires_at = Utc::now().timestamp() + 600;
         let _ = post_load_arcium_withdrawal_grant(
             State(state.clone()),
@@ -4257,6 +4881,26 @@ mod tests {
         )
         .await
         .unwrap();
+        state.vault.set_arcium_mode(ArciumAuthorityMode::Enforced);
+        let plaintext_load_error = post_load_arcium_withdrawal_grant(
+            State(state.clone()),
+            Json(LoadArciumWithdrawalGrantRequest {
+                grant_id: "withdraw-grant-plaintext-rejected".to_string(),
+                client: client.to_string(),
+                withdrawal_id: 8,
+                recipient_ata: recipient_ata.to_string(),
+                amount: 500_000,
+                expires_at: grant_expires_at,
+                consumed: false,
+            }),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(matches!(
+            plaintext_load_error,
+            EnclaveError::Internal(message) if message.contains("Plaintext Arcium grant loading")
+        ));
 
         let issued_at = Utc::now().timestamp();
         let expires_at = issued_at + 60;
@@ -5321,6 +5965,9 @@ mod tests {
             attestation_is_local_dev: true,
             provider_mtls_enabled: false,
             outbound: crate::outbound::OutboundTransport::direct(),
+            arcium_grant_decryptor: None,
+            arcium_mxe_public_key: None,
+            arcium_domain_hashes: None,
         });
 
         wal::replay_app_state(&replay_state).await.unwrap();
@@ -5407,6 +6054,9 @@ mod tests {
             attestation_is_local_dev: true,
             provider_mtls_enabled: false,
             outbound: crate::outbound::OutboundTransport::direct(),
+            arcium_grant_decryptor: None,
+            arcium_mxe_public_key: None,
+            arcium_domain_hashes: None,
         });
 
         let client_signing_key = SigningKey::generate(&mut OsRng);
@@ -5523,6 +6173,9 @@ mod tests {
             attestation_is_local_dev: true,
             provider_mtls_enabled: false,
             outbound: crate::outbound::OutboundTransport::direct(),
+            arcium_grant_decryptor: None,
+            arcium_mxe_public_key: None,
+            arcium_domain_hashes: None,
         });
 
         wal::replay_app_state(&replay_state).await.unwrap();
@@ -5644,6 +6297,9 @@ mod tests {
             attestation_is_local_dev: true,
             provider_mtls_enabled: false,
             outbound: crate::outbound::OutboundTransport::direct(),
+            arcium_grant_decryptor: None,
+            arcium_mxe_public_key: None,
+            arcium_domain_hashes: None,
         });
 
         wal::replay_app_state(&replay_state).await.unwrap();

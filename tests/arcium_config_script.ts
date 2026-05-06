@@ -1,5 +1,8 @@
 import { expect } from "chai";
 import { createRequire } from "module";
+import fs from "fs";
+import os from "os";
+import path from "path";
 
 const requireFromTest = createRequire(
   `${process.cwd()}/tests/arcium_config_script.ts`
@@ -9,12 +12,15 @@ const {
   arciumStateFromAccount,
   buildDesiredConfig,
   bytesToHex,
+  configuredMxePublicKey,
+  decodeFixedBytes,
   decodeX25519PublicKey,
   findConfigMismatches,
   parseStatus,
   statusRequiresDeployment,
   statusName,
 } = requireFromTest("../scripts/devnet/arcium-config");
+const { loadEnvFile } = requireFromTest("../scripts/devnet/common");
 
 const PROGRAM_ID = "Arcj82pX7HxYKLR92qvgZUAd7vGS1k4hQvAFcPATFdEQ";
 const MXE_ACCOUNT = "11111111111111111111111111111115";
@@ -45,6 +51,64 @@ describe("arcium devnet config script", () => {
     expect(() => decodeX25519PublicKey("abcd")).to.throw(
       "must decode to 32 bytes"
     );
+  });
+
+  it("decodes pinned MXE public keys from hex or base64", () => {
+    const hex = "08".repeat(32);
+    const hexBytes = configuredMxePublicKey({
+      SUBLY402_ARCIUM_MXE_PUBLIC_KEY_HEX: hex,
+    });
+    const base64Bytes = configuredMxePublicKey({
+      SUBLY402_ARCIUM_MXE_PUBLIC_KEY_B64:
+        Buffer.from(hexBytes).toString("base64"),
+    });
+
+    expect(Array.from(hexBytes)).to.deep.equal(new Array(32).fill(8));
+    expect(Array.from(base64Bytes)).to.deep.equal(Array.from(hexBytes));
+    expect(bytesToHex(hexBytes)).to.equal(hex);
+    expect(configuredMxePublicKey({})).to.equal(null);
+    expect(() => decodeFixedBytes("TEST_KEY", "abcd")).to.throw(
+      "must decode to 32 bytes"
+    );
+  });
+
+  it("lets later env files override alternate hex/base64 encodings", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "subly402-env-"));
+    const envPath = path.join(dir, ".env");
+    const hexKey = "SUBLY402_TEST_ARCIUM_KEY_HEX";
+    const b64Key = "SUBLY402_TEST_ARCIUM_KEY_B64";
+    process.env[hexKey] = "aa".repeat(32);
+    delete process.env[b64Key];
+
+    fs.writeFileSync(
+      envPath,
+      `export ${b64Key}='${Buffer.from([1]).toString("base64")}'\n`
+    );
+    loadEnvFile(envPath);
+
+    expect(process.env[hexKey]).to.equal(undefined);
+    expect(process.env[b64Key]).to.equal("AQ==");
+    delete process.env[hexKey];
+    delete process.env[b64Key];
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("preserves shell-protected env over file alternate encodings", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "subly402-env-"));
+    const envPath = path.join(dir, ".env");
+    const hexKey = "SUBLY402_TEST_SHELL_ARCIUM_KEY_HEX";
+    const b64Key = "SUBLY402_TEST_SHELL_ARCIUM_KEY_B64";
+    delete process.env[hexKey];
+    process.env[b64Key] = "shell-value";
+
+    fs.writeFileSync(envPath, `export ${hexKey}='${"bb".repeat(32)}'\n`);
+    loadEnvFile(envPath, { protectedKeys: new Set([b64Key]) });
+
+    expect(process.env[hexKey]).to.equal(undefined);
+    expect(process.env[b64Key]).to.equal("shell-value");
+    delete process.env[hexKey];
+    delete process.env[b64Key];
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it("requires deployment fields for mirror mode", () => {

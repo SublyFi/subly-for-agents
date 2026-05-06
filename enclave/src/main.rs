@@ -2,6 +2,7 @@
 
 mod adaptor_sig;
 mod admin_auth;
+mod arcium;
 mod asc_manager;
 mod attestation;
 mod audit;
@@ -82,9 +83,33 @@ async fn main() {
     let arcium_mode =
         ArciumAuthorityMode::from_env_value(env::var("SUBLY402_ARCIUM_MODE").ok().as_deref())
             .expect("SUBLY402_ARCIUM_MODE must be disabled, mirror, or enforced");
+    let arcium_grant_decryptor = arcium::ArciumGrantDecryptor::from_env()
+        .expect("SUBLY402_ARCIUM_TEE_X25519_PRIVATE_KEY must be valid when set")
+        .map(Arc::new);
+    let arcium_mxe_public_key = arcium::mxe_public_key_from_env()
+        .expect("SUBLY402_ARCIUM_MXE_PUBLIC_KEY must be valid when set");
+    let arcium_domain_hashes = arcium::grant_domain_hashes_from_env()
+        .expect("SUBLY402_ARCIUM_AUTHORIZE_*_DOMAIN_HASH_* must be valid when set");
+    if arcium_mode == ArciumAuthorityMode::Enforced {
+        assert!(
+            arcium_grant_decryptor.is_some(),
+            "SUBLY402_ARCIUM_TEE_X25519_PRIVATE_KEY_HEX or _B64 is required in Arcium enforced mode"
+        );
+        assert!(
+            arcium_mxe_public_key.is_some(),
+            "SUBLY402_ARCIUM_MXE_PUBLIC_KEY_HEX or _B64 is required in Arcium enforced mode"
+        );
+        assert!(
+            arcium_domain_hashes.is_some(),
+            "SUBLY402_ARCIUM_AUTHORIZE_BUDGET_DOMAIN_HASH_LO/HI and SUBLY402_ARCIUM_AUTHORIZE_WITHDRAWAL_DOMAIN_HASH_LO/HI are required in Arcium enforced mode"
+        );
+    }
     vault_state.set_arcium_mode(arcium_mode);
     info!(
         arcium_mode = arcium_mode.as_str(),
+        arcium_grant_decryptor = arcium_grant_decryptor.is_some(),
+        arcium_mxe_public_key = arcium_mxe_public_key.is_some(),
+        arcium_domain_hashes = arcium_domain_hashes.is_some(),
         "Configured Arcium authority mode"
     );
 
@@ -156,6 +181,9 @@ async fn main() {
         attestation_is_local_dev: bootstrap.attestation.is_local_dev,
         provider_mtls_enabled,
         outbound,
+        arcium_grant_decryptor,
+        arcium_mxe_public_key,
+        arcium_domain_hashes,
     });
 
     let snapshot_manager = snapshot_store
@@ -231,8 +259,16 @@ async fn main() {
                 post(handlers::post_load_arcium_budget_grant),
             )
             .route(
+                "/v1/admin/arcium/budget-grant-encrypted",
+                post(handlers::post_load_encrypted_arcium_budget_grant),
+            )
+            .route(
                 "/v1/admin/arcium/withdrawal-grant",
                 post(handlers::post_load_arcium_withdrawal_grant),
+            )
+            .route(
+                "/v1/admin/arcium/withdrawal-grant-encrypted",
+                post(handlers::post_load_encrypted_arcium_withdrawal_grant),
             )
             .route("/v1/admin/fire-batch", post(handlers::post_fire_batch))
             .route_layer(middleware::from_fn(admin_auth::require_admin_auth));

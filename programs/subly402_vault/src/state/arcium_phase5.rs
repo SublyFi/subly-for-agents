@@ -126,6 +126,7 @@ pub struct WithdrawalGrant {
     pub status: u8,
     pub recipient_ata: Pubkey,
     pub expires_at: i64,
+    pub state_version_at_authorization: u64,
     pub grant_state_ciphertexts: [[u8; 32]; WITHDRAWAL_GRANT_STATE_SCALARS],
     pub grant_state_nonce: [u8; 16],
     pub grant_ciphertexts: [[u8; 32]; WITHDRAWAL_GRANT_SCALARS],
@@ -141,6 +142,7 @@ impl WithdrawalGrant {
         + 8
         + 1
         + 32
+        + 8
         + 8
         + (32 * WITHDRAWAL_GRANT_STATE_SCALARS)
         + 16

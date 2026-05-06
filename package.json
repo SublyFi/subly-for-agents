@@ -3,6 +3,9 @@
   "scripts": {
     "devnet:bootstrap": "node scripts/devnet/bootstrap.js",
     "devnet:arcium-config": "node scripts/devnet/arcium-config.js",
+    "devnet:arcium-init-comp-defs": "node scripts/devnet/arcium-init-comp-defs.js",
+    "devnet:arcium-smoke": "node scripts/devnet/arcium-smoke.js",
+    "devnet:arcium-sync": "node scripts/devnet/arcium-sync.js",
     "devnet:smoke": "node scripts/devnet/smoke.js",
     "devnet:start": "node scripts/devnet/start.js",
     "devnet:status": "node scripts/devnet/status.js",

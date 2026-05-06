@@ -1651,6 +1651,10 @@ pub fn authorize_withdrawal_handler(
             &ctx.accounts.vault_config,
             &ctx.accounts.arcium_config,
         ));
+    let (vault_config_lo, vault_config_hi) = split_pubkey(ctx.accounts.vault_config.key());
+    let (client_lo, client_hi) = split_pubkey(ctx.accounts.client.key());
+    let (withdrawal_grant_lo, withdrawal_grant_hi) =
+        split_pubkey(ctx.accounts.withdrawal_grant.key());
     let (recipient_lo, recipient_hi) = split_pubkey(recipient_ata);
 
     ctx.accounts.client_vault_state.status = CLIENT_VAULT_STATUS_PENDING;
@@ -1666,6 +1670,7 @@ pub fn authorize_withdrawal_handler(
     withdrawal_grant.status = WITHDRAWAL_GRANT_STATUS_PENDING;
     withdrawal_grant.recipient_ata = recipient_ata;
     withdrawal_grant.expires_at = expires_at;
+    withdrawal_grant.state_version_at_authorization = authorization_state_version;
     withdrawal_grant.grant_state_ciphertexts = [[0u8; 32]; WITHDRAWAL_GRANT_STATE_SCALARS];
     withdrawal_grant.grant_state_nonce = [0u8; 16];
     withdrawal_grant.grant_ciphertexts = [[0u8; 32]; WITHDRAWAL_GRANT_SCALARS];
@@ -1685,6 +1690,12 @@ pub fn authorize_withdrawal_handler(
     .plaintext_u64(withdrawal_id)
     .plaintext_u64(expires_at_u64)
     .plaintext_u64(authorization_state_version)
+    .plaintext_u128(vault_config_lo)
+    .plaintext_u128(vault_config_hi)
+    .plaintext_u128(client_lo)
+    .plaintext_u128(client_hi)
+    .plaintext_u128(withdrawal_grant_lo)
+    .plaintext_u128(withdrawal_grant_hi)
     .plaintext_u128(recipient_lo)
     .plaintext_u128(recipient_hi)
     .build();

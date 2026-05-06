@@ -14,7 +14,7 @@ export const ARCIUM_AGENT_VAULT_SCALARS = 8;
 export const ARCIUM_BUDGET_GRANT_SCALARS = 15;
 export const ARCIUM_BUDGET_REQUEST_SCALARS = 6;
 export const ARCIUM_RECONCILE_REPORT_SCALARS = 7;
-export const ARCIUM_WITHDRAWAL_GRANT_SCALARS = 6;
+export const ARCIUM_WITHDRAWAL_GRANT_SCALARS = 15;
 export const ARCIUM_WITHDRAWAL_REQUEST_SCALARS = 5;
 export const ARCIUM_WITHDRAWAL_REPORT_SCALARS = 5;
 
@@ -154,6 +154,15 @@ export interface ArciumWithdrawalGrantView {
   withdrawalId: bigint;
   amount: bigint;
   expiresAt: bigint;
+  stateVersion: bigint;
+  domainHashLo: bigint;
+  domainHashHi: bigint;
+  vaultConfigLo: bigint;
+  vaultConfigHi: bigint;
+  clientLo: bigint;
+  clientHi: bigint;
+  withdrawalGrantLo: bigint;
+  withdrawalGrantHi: bigint;
   recipientLo: bigint;
   recipientHi: bigint;
 }
@@ -595,8 +604,17 @@ export function decryptArciumWithdrawalGrantView(
     withdrawalId: values[1],
     amount: values[2],
     expiresAt: values[3],
-    recipientLo: values[4],
-    recipientHi: values[5],
+    stateVersion: values[4],
+    domainHashLo: values[5],
+    domainHashHi: values[6],
+    vaultConfigLo: values[7],
+    vaultConfigHi: values[8],
+    clientLo: values[9],
+    clientHi: values[10],
+    withdrawalGrantLo: values[11],
+    withdrawalGrantHi: values[12],
+    recipientLo: values[13],
+    recipientHi: values[14],
   };
 }
 

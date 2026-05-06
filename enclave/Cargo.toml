@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 subly402_vault = { path = "../programs/subly402_vault", features = ["cpi"] }
+arcis-compiler = "=0.9.7"
 async-trait = "0.1"
 axum = { version = "0.7", features = ["json"] }
 bytes = "1"

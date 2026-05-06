@@ -17,6 +17,7 @@ pub mod retire_vault;
 pub mod rotate_auditor;
 pub mod set_arcium_status;
 pub mod settle_vault;
+pub mod update_arcium_deployment;
 pub mod withdraw;
 
 pub use announce_migration::*;
@@ -36,4 +37,5 @@ pub use retire_vault::*;
 pub use rotate_auditor::*;
 pub use set_arcium_status::*;
 pub use settle_vault::*;
+pub use update_arcium_deployment::*;
 pub use withdraw::*;

@@ -744,7 +744,7 @@ Use this for:
 TEE behavior:
 
 - continues using existing `ClientBalance`
-- subscribes to Arcium callback events
+- loads decrypted Arcium callback grant outputs through the trusted sync path
 - compares decrypted owner test fixtures only in non-production test mode
 
 ### Enforced Mode
@@ -912,6 +912,17 @@ Timing correlation:
   limits.
 - Callback accounts must be pre-created and writable; callbacks must not create
   or resize accounts.
+- Devnet grant sync posts Arcium `Enc<Shared>` ciphertexts to enclave admin
+  APIs; decryption happens inside the enclave with
+  `SUBLY402_ARCIUM_TEE_X25519_PRIVATE_KEY_HEX` or
+  `SUBLY402_ARCIUM_TEE_X25519_PRIVATE_KEY_B64`. The enclave must also pin the
+  expected Arcium MXE public key with `SUBLY402_ARCIUM_MXE_PUBLIC_KEY_HEX` or
+  `SUBLY402_ARCIUM_MXE_PUBLIC_KEY_B64`; request-supplied MXE keys are rejected
+  when they do not match. Expected `authorize_budget` and
+  `authorize_withdrawal` domain hash parts are also pinned in enclave env, and
+  request-supplied domain hashes are checked only against those trusted values.
+- Devnet upgrades that include the expanded `WithdrawalGrant` account layout
+  must close/recreate pending withdrawal grant accounts before deployment.
 
 ## 12. Implementation Order
 
@@ -955,6 +966,8 @@ Timing correlation:
 9. [x] Add Arcium-native client recovery:
    - `prepare_recovery_claim`
    - `arcium_force_settle_finalize`
+10. [x] Add devnet Arcium-to-enclave grant sync via
+        `npm run devnet:arcium-sync`.
 
 ## 13. Test Plan
 

@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { spawnSync } = require("child_process");
 
 const anchor = require("@coral-xyz/anchor");
 const nacl = require("tweetnacl");
@@ -48,10 +49,34 @@ function parseEnvAssignment(rawValue) {
   return expandEnv(value);
 }
 
-function loadEnvFile(filePath) {
+function encodedEnvGroup(key) {
+  if (key.endsWith("_HEX") || key.endsWith("_B64")) {
+    const base = key.slice(0, -4);
+    return [`${base}_HEX`, `${base}_B64`];
+  }
+  return [key];
+}
+
+function envGroupIsProtected(key, protectedKeys) {
+  return encodedEnvGroup(key).some((groupKey) => protectedKeys.has(groupKey));
+}
+
+function clearAlternativeEncodedEnv(key, protectedKeys = new Set()) {
+  const alternative = key.endsWith("_HEX")
+    ? `${key.slice(0, -4)}_B64`
+    : key.endsWith("_B64")
+    ? `${key.slice(0, -4)}_HEX`
+    : null;
+  if (alternative && !protectedKeys.has(alternative)) {
+    delete process.env[alternative];
+  }
+}
+
+function loadEnvFile(filePath, options = {}) {
   if (!fs.existsSync(filePath)) {
     return;
   }
+  const protectedKeys = options.protectedKeys || new Set();
   const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
   for (const line of lines) {
     const trimmed = line.trim();
@@ -63,13 +88,18 @@ function loadEnvFile(filePath) {
       continue;
     }
     const [, key, rawValue] = match;
+    if (envGroupIsProtected(key, protectedKeys)) {
+      continue;
+    }
+    clearAlternativeEncodedEnv(key, protectedKeys);
     process.env[key] = parseEnvAssignment(rawValue);
   }
 }
 
 function loadDefaultEnvFiles() {
-  loadEnvFile(LOCAL_ENV_PATH);
-  loadEnvFile(GENERATED_ENV_PATH);
+  const protectedKeys = new Set(Object.keys(process.env));
+  loadEnvFile(GENERATED_ENV_PATH, { protectedKeys });
+  loadEnvFile(LOCAL_ENV_PATH, { protectedKeys });
 }
 
 function loadKeypairFromFile(filePath) {
@@ -170,6 +200,55 @@ function writeGeneratedEnv(vars) {
   });
   ensureDir(GENERATED_ENV_PATH);
   fs.writeFileSync(GENERATED_ENV_PATH, `${lines.join("\n")}\n`);
+}
+
+function readGeneratedEnvAssignments() {
+  if (!fs.existsSync(GENERATED_ENV_PATH)) {
+    return {};
+  }
+  const assignments = {};
+  const lines = fs.readFileSync(GENERATED_ENV_PATH, "utf8").split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+    const match = trimmed.match(/^export\s+([A-Z0-9_]+)=(.*)$/);
+    if (!match) {
+      continue;
+    }
+    const [, key, rawValue] = match;
+    assignments[key] = parseEnvAssignment(rawValue);
+  }
+  return assignments;
+}
+
+function updateGeneratedEnv(vars) {
+  writeGeneratedEnv({
+    ...readGeneratedEnvAssignments(),
+    ...vars,
+  });
+}
+
+function requireSdkArcium() {
+  const modulePath = path.join(ROOT, "sdk", "dist", "arcium.js");
+  const sourcePath = path.join(ROOT, "sdk", "src", "arcium.ts");
+  const needsBuild =
+    !fs.existsSync(modulePath) ||
+    (fs.existsSync(sourcePath) &&
+      fs.statSync(sourcePath).mtimeMs > fs.statSync(modulePath).mtimeMs);
+  if (needsBuild) {
+    const result = spawnSync("npm", ["--prefix", "sdk", "run", "build"], {
+      cwd: ROOT,
+      stdio: "inherit",
+    });
+    if (result.status !== 0) {
+      throw new Error(
+        "Failed to build sdk/dist/arcium.js. Run npm --prefix sdk run build and retry."
+      );
+    }
+  }
+  return require(modulePath);
 }
 
 async function fundAccount(provider, recipient, lamports) {
@@ -297,11 +376,13 @@ module.exports = {
   loadState,
   postJson,
   randomSeedBase64,
+  requireSdkArcium,
   requireEnv,
   saveState,
   sha256hex,
   signPaymentPayload,
   sleep,
+  updateGeneratedEnv,
   waitForEndpoint,
   writeGeneratedEnv,
 };

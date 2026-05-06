@@ -335,7 +335,23 @@ describe("arcium sdk helpers", () => {
     });
 
     const withdrawalGrantCiphertexts = mxeCipher.encrypt(
-      [1n, 10n, 456n, 1_800_000_100n, 19n, 20n],
+      [
+        1n,
+        10n,
+        456n,
+        1_800_000_100n,
+        2n,
+        21n,
+        22n,
+        23n,
+        24n,
+        25n,
+        26n,
+        27n,
+        28n,
+        19n,
+        20n,
+      ],
       nonce
     );
     expect(
@@ -349,6 +365,15 @@ describe("arcium sdk helpers", () => {
       withdrawalId: 10n,
       amount: 456n,
       expiresAt: 1_800_000_100n,
+      stateVersion: 2n,
+      domainHashLo: 21n,
+      domainHashHi: 22n,
+      vaultConfigLo: 23n,
+      vaultConfigHi: 24n,
+      clientLo: 25n,
+      clientHi: 26n,
+      withdrawalGrantLo: 27n,
+      withdrawalGrantHi: 28n,
       recipientLo: 19n,
       recipientHi: 20n,
     });

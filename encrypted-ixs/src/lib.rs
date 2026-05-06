@@ -107,6 +107,15 @@ mod circuits {
         pub withdrawal_id: u64,
         pub amount: u64,
         pub expires_at: u64,
+        pub state_version: u64,
+        pub domain_hash_lo: u128,
+        pub domain_hash_hi: u128,
+        pub vault_config_lo: u128,
+        pub vault_config_hi: u128,
+        pub client_lo: u128,
+        pub client_hi: u128,
+        pub withdrawal_grant_lo: u128,
+        pub withdrawal_grant_hi: u128,
         pub recipient_lo: u128,
         pub recipient_hi: u128,
     }
@@ -412,6 +421,12 @@ mod circuits {
         public_withdrawal_id: u64,
         public_expires_at: u64,
         authorization_state_version: u64,
+        vault_config_lo: u128,
+        vault_config_hi: u128,
+        client_lo: u128,
+        client_hi: u128,
+        withdrawal_grant_lo: u128,
+        withdrawal_grant_hi: u128,
         recipient_lo: u128,
         recipient_hi: u128,
     ) -> (
@@ -434,7 +449,8 @@ mod circuits {
             && valid_request
             && request.amount > 0
             && state.free >= request.amount
-            && can_lock;
+            && can_lock
+            && authorization_state_version > 0;
 
         let mut grant_state = WithdrawalGrantState {
             withdrawal_id: public_withdrawal_id,
@@ -450,6 +466,15 @@ mod circuits {
             withdrawal_id: public_withdrawal_id,
             amount: 0,
             expires_at: public_expires_at,
+            state_version: authorization_state_version,
+            domain_hash_lo: expected_domain_hash_lo,
+            domain_hash_hi: expected_domain_hash_hi,
+            vault_config_lo,
+            vault_config_hi,
+            client_lo,
+            client_hi,
+            withdrawal_grant_lo,
+            withdrawal_grant_hi,
             recipient_lo,
             recipient_hi,
         };
