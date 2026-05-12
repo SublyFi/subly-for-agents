@@ -1,65 +1,180 @@
+# Subly402
+
+Privacy-first x402 payments for Solana agents.
+
+Subly402 lets an AI agent call a paid HTTP API, receive a normal `402 Payment Required` response, and pay with USDC on Solana without creating a direct public buyer-to-provider payment edge. The core product is a vault-backed facilitator: buyers deposit into a shared Solana vault, the facilitator verifies x402-style payment payloads inside an AWS Nitro Enclave, and providers receive batched vault payouts instead of direct transfers from each buyer.
+
+## Status
+
+| Area | Current state |
+| --- | --- |
+| Public demo site | https://www.sublyfi.com/ |
+| Public facilitator | `https://api.demo.sublyfi.com` |
+| Pitch video | https://www.loom.com/share/f2d2482a73824ff9abe1de0186a355f7 |
+| Demo video | https://www.loom.com/share/8ae7523608b34d88abc2aae3a5b5b031 |
+| Project X | https://x.com/subly_fi |
+| Buyer SDK | [`subly402-sdk`](https://www.npmjs.com/package/subly402-sdk) |
+| Seller middleware | [`subly402-express`](https://www.npmjs.com/package/subly402-express) |
+| Active release branch | `feature/arcium` |
+
+**Branch note:** Arcium integration and mainnet release preparation are being developed on `feature/arcium`. That branch keeps the current Devnet/Nitro flow working while adding encrypted accounting, budget grants, withdrawal grants, and release hardening for a mainnet path.
+
+Some internal file names and environment variables still use the historical `A402_` prefix. The public project, NPM packages, and integration surface are Subly402.
+
+## Why Subly Exists
+
+Direct x402 payments are simple for developers, but every Solana token transfer is public. If an agent pays APIs directly from its wallet, observers can infer which providers it uses, how often it calls them, and roughly what its workflow costs. For autonomous agents and businesses, that payment graph can leak strategy, vendors, usage patterns, and budget.
+
+Subly keeps the x402 developer experience and changes the settlement shape:
+
+```text
+Direct x402:
+  buyer token account -> provider token account
+
+Subly402:
+  buyer token account -> Subly vault
+  Subly vault -> provider token account, batched with other activity
 ```
-Old VaultConfig: 6i5SyF8Hx2u5MZW2JgWGhdg5CJsAKeF7UaRAd9bERDDL
-Old Vault ATA:   76YBLxs4EBrvbiP9RT6vH66i6qZb9b67hUdoajjqz5u
 
+The first deposit remains public, but individual paid API requests no longer create direct on-chain buyer-to-provider edges.
+
+## What Is Implemented
+
+- `programs/subly402_vault`: Anchor program for USDC escrow, deposits, withdrawals, provider settlement, receipt recovery, and encrypted audit records.
+- `enclave`: Nitro Enclave facilitator that verifies payment payloads, manages private balances, forwards paid requests, signs receipts, encrypts audit data, and builds batched settlement.
+- `parent`: untrusted EC2-side relay, KMS proxy, and encrypted snapshot/WAL storage. It forwards traffic but must not terminate TLS.
+- `watchtower`: stale receipt and force-settlement support for enclave outage recovery.
+- `sdk`: buyer SDK published as `subly402-sdk`; wraps `fetch`, verifies facilitator attestation, signs payment payloads, and supports on-demand vault deposits.
+- `middleware`: seller middleware published as `subly402-express`; Express middleware for paid routes with automatic Solana `payTo` derivation.
+- `scripts/demo`: side-by-side demos comparing direct x402 settlement with Subly vault settlement.
+- `encrypted-ixs` and `sdk/src/arcium.ts`: Arcium work on `feature/arcium` for encrypted per-client accounting and grant authorization.
+
+## Technical Architecture
+
+```text
+Buyer / agent
+  -> paid API request
+  -> provider returns HTTP 402
+  -> subly402-sdk verifies facilitator attestation
+  -> buyer signs payment payload
+  -> provider settles through subly402-express
+  -> Nitro Enclave reserves balance and forwards the paid request
+  -> vault batches provider payouts on Solana
 ```
 
-# A402 / Privacy First x402 on Solana
-
-This repository implements `Privacy First x402` for public Solana Devnet deployment with AWS Nitro Enclaves.
-
-The most important assumptions:
-
-- `TEE is required`
-- `TLS terminates inside the enclave`
-- `parent instance / NLB / nginx / ALB must not see plaintext`
-
-This README has two goals.
-
-1. Make local preparation mostly copy-and-run commands
-2. Spell out what to configure on the AWS side, down to the relevant screens
-
-## Architecture Overview
-
-The public topology is:
+The public deployment topology is:
 
 ```text
 Internet
   -> NLB TCP/443
-  -> parent EC2 (Nitro Enclaves enabled)
-  -> ingress_relay
+  -> parent EC2 with Nitro Enclaves enabled
+  -> ingress relay
   -> vsock
-  -> a402-enclave
+  -> Subly402 Nitro Enclave
 
 parent EC2
-  - a402-parent
-  - a402-watchtower
+  - parent relay
+  - watchtower
   - nitro-cli
   - encrypted snapshot/WAL storage
 ```
 
-Responsibilities:
+The most important security assumptions are:
 
-- `programs/a402_vault`: Solana program deployed to Devnet
-- `enclave`: facilitator running inside the Nitro enclave
-- `parent`: relay / KMS proxy / snapshot store on the parent instance
-- `watchtower`: long-running process for stale receipt challenges
+- TLS terminates inside the Nitro Enclave.
+- The parent instance, NLB, nginx, or ALB must not see plaintext request or payment data.
+- KMS access is conditioned on Nitro attestation measurements.
+- Buyers should pin the facilitator's attestation policy before paying.
 
-## x402-Compatible Integration Shape
+## Payment Flow
 
-After deploying the facilitator, Buyer / Seller integration can start like a normal x402 quickstart, without issuing API keys or registering providers.
+1. A seller protects a route with `subly402-express` and chooses a price, network, and receiving wallet.
+2. A buyer wraps `fetch` with `subly402-sdk`.
+3. The seller returns a standard `402 Payment Required` envelope for the paid route.
+4. The buyer SDK fetches `/v1/attestation`, verifies the Nitro policy, signs the payment payload, and retries.
+5. If the buyer has insufficient vault balance, the SDK can call an `autoDeposit` hook, deposit USDC into the vault, and retry with a fresh signature.
+6. The provider asks the facilitator to verify and settle.
+7. The enclave reserves internal balance, forwards the paid request, persists receipts/WAL, and later submits aggregate provider payouts from the vault.
+8. On-chain observers see deposits and aggregate provider payouts, not per-request buyer-to-provider transfers.
 
-The Seller only provides the protected route, price, network, and receiving wallet. On Solana, the middleware automatically derives the USDC ATA as `payTo`. `providerId` is derived from `network + assetMint + payTo`, and the enclave automatically registers it as an open seller during the first valid payment verification.
+## Privacy Boundaries
+
+| Data | Public on-chain observer | Parent EC2 / relay | Nitro Enclave | Provider |
+| --- | --- | --- | --- | --- |
+| Buyer deposit into vault | Visible | Visible | Visible | Not needed |
+| Individual buyer-to-provider payment edge | Hidden | Hidden from plaintext TLS | Known | Sees own request |
+| Per-request amount | Hidden in batched settlement | Hidden from plaintext TLS | Known | Sees own price |
+| Provider aggregate payout | Visible | Visible | Visible | Visible |
+| Buyer private balance | Hidden on-chain | Hidden | Known today; moving to Arcium encrypted state on `feature/arcium` | Hidden |
+| Audit trail | Encrypted records | Encrypted records | Encrypts records | Decryptable only with authorized disclosure key |
+
+## Arcium And Mainnet Preparation
+
+`feature/arcium` is the active branch for the next release track. The goal is to reduce how much long-lived accounting state the TEE must hold by moving per-client balances and authorization state into Arcium MPC.
+
+The branch includes:
+
+- Arcium circuits under `encrypted-ixs`.
+- `ClientVaultState`, `DepositCredit`, `BudgetGrant`, and `WithdrawalGrant` flows.
+- `Enc<Mxe>` state for balances, yield, and grant state.
+- `Enc<Shared>` grant outputs for the attested enclave key.
+- SDK helpers for Arcium encryption/decryption in `subly402-sdk/arcium`.
+- Devnet scripts for Arcium config, computation definition initialization, smoke tests, and state sync.
+- Mainnet release hardening around attestation pinning, recovery paths, batch policy, NPM package UX, and deployment repeatability.
+
+The Nitro Enclave still handles real-time HTTP request forwarding in this phase. Arcium is used for encrypted money-at-rest accounting and budget authorization, while Subly's existing vault path remains the baseline payment flow.
+
+## Devnet Deployment Addresses
+
+Current public Devnet deployment:
+
+| Item | Address |
+| --- | --- |
+| Program ID | `3iusaL6ys79DsbpweDwGhHvtjdnhAhtpyczPtMbu5Mbe` |
+| VaultConfig | `EGJVg1tw3NJQj34Wk1vqSSbXEPd3CaYzmrAzWLwrcm3A` |
+| Vault token account | `41E84Z5PVYCWvZKLcN3vWn7fDku793aTB7pfpyrhCg98` |
+| Vault signer | `4YDcz8mRMGPhZbFiL1RTmXhYNUx7jDsYcU9y5oB9bE2N` |
+| Devnet USDC mint | `3sJgMz6NUf7zmsNfsgnJH6KKWxQaVkz8frAyKnEMAHy2` |
+| Public facilitator | `https://api.demo.sublyfi.com` |
+
+Previous Devnet vault, kept here so old explorer links and recordings are not confused with the current demo state:
+
+| Item | Address |
+| --- | --- |
+| Old VaultConfig | `6i5SyF8Hx2u5MZW2JgWGhdg5CJsAKeF7UaRAd9bERDDL` |
+| Old Vault token account / ATA | `76YBLxs4EBrvbiP9RT6vH66i6qZb9b67hUdoajjqz5u` |
+
+## Developer Quickstart
+
+Install the released packages:
+
+```bash
+yarn add subly402-sdk subly402-express express
+```
+
+Seller side:
 
 ```ts
+import express from "express";
+import {
+  Subly402FacilitatorClient,
+  Subly402ResourceServer,
+  Subly402ExactScheme,
+  paymentMiddleware,
+  captureSubly402RawBody,
+} from "subly402-express";
+
+const app = express();
+app.use(express.json({ verify: captureSubly402RawBody }));
+
 const facilitator = new Subly402FacilitatorClient({
-  url: "https://<your-subly-facilitator>",
-  assetMint: process.env.USDC_MINT!,
+  url: "https://api.demo.sublyfi.com",
+  assetMint: process.env.SUBLY402_USDC_MINT!,
 });
 
 const resourceServer = new Subly402ResourceServer(facilitator).register(
-  "solana:*",
-  new Subly402ExactScheme(),
+  "solana:devnet",
+  new Subly402ExactScheme()
 );
 
 app.use(
@@ -76,22 +191,29 @@ app.use(
         ],
       },
     },
-    resourceServer,
-  ),
+    resourceServer
+  )
 );
 ```
 
-Buyers also do not need a Subly API key or account registration. Pass a funded signer and the Nitro attestation policy for the trusted facilitator, then wrap `fetch`.
+Buyer side:
 
 ```ts
+import { Subly402Client, wrapFetchWithPayment } from "subly402-sdk";
+
 const client = new Subly402Client({
   signer,
   network: "solana:devnet",
-  trustedFacilitators: ["https://<your-subly-facilitator>"],
+  trustedFacilitators: ["https://api.demo.sublyfi.com"],
   autoDeposit: {
     maxDepositPerRequest: "$0.05",
-    deposit: async ({ amount, details }) => {
-      await depositIntoSublyVault({ amount, mint: details.asset.mint });
+    deposit: async ({ amountAtomic, details, facilitatorUrl }) => {
+      await depositIntoSublyVault({
+        amountAtomic,
+        mint: details.asset.mint,
+        vaultConfig: details.vault.config,
+        facilitatorUrl,
+      });
     },
   },
   nitroAttestation: { policy },
@@ -101,7 +223,49 @@ const fetchWithPayment = wrapFetchWithPayment(fetch, client);
 const res = await fetchWithPayment("https://api.example.com/weather");
 ```
 
-If the balance is insufficient, the Buyer SDK's `autoDeposit` hook can deposit the required amount on demand before re-signing and retrying. This preserves the same x402 experience of receiving a 402, paying, and retrying, while vault batching hides correlation with Seller payouts.
+No Subly API key or provider registration is required for the default flow. Sellers provide a wallet owner; the middleware derives the USDC associated token account and uses `network + assetMint + payTo` as the open seller identity.
+
+## Running The Demo Locally
+
+For the side-by-side demo that compares direct x402 with Subly vault settlement:
+
+```bash
+yarn install --frozen-lockfile
+npm --prefix middleware run build
+npm --prefix sdk run build
+
+yarn devnet:bootstrap
+yarn devnet:start
+
+yarn demo:x402-seller
+yarn demo:x402-buyer
+
+yarn demo:subly-seller
+yarn demo:subly-buyer
+```
+
+More detail is in [docs/demo-side-by-side.md](./docs/demo-side-by-side.md) and [docs/quickstart.md](./docs/quickstart.md).
+
+## Repository Map
+
+| Path | Purpose |
+| --- | --- |
+| `programs/subly402_vault` | Anchor vault program |
+| `enclave` | Nitro Enclave facilitator |
+| `parent` | Parent EC2 relay / KMS proxy / snapshot bridge |
+| `watchtower` | Receipt recovery and force-settlement support |
+| `sdk` | Buyer SDK package |
+| `middleware` | Express seller middleware package |
+| `encrypted-ixs` | Arcium circuits on `feature/arcium` |
+| `scripts/demo` | Public demo scripts |
+| `scripts/devnet` | Local Devnet and Arcium helpers |
+| `scripts/nitro` | Nitro build/provision/deployment helpers |
+| `infra/nitro` | Terraform, systemd, and Nitro deployment assets |
+| `docs` | Architecture, protocol, demo, and deployment references |
+
+## Deployment Runbook
+
+The sections below are the operational deployment guide for maintaining the public Devnet facilitator or running your own Nitro-backed facilitator.
 
 ## Shortest Path
 
