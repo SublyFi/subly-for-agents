@@ -6,6 +6,12 @@ Subly402 lets an agent call a paid HTTP API, receive a normal `402 Payment Requi
 
 The next release track turns the vault into an Arcium-backed yield vault. Client balances, yield, and authorization state move toward encrypted MPC accounting while the Nitro facilitator keeps the real-time x402 request path fast. That work lives on `feature/arcium`; `main` stays the stable Devnet/Nitro payment entry point.
 
+What to evaluate:
+
+- Working Devnet x402 flow with published buyer SDK and seller middleware.
+- Privacy improvement: no direct buyer-to-provider token transfer for paid API calls.
+- Next track: Arcium-backed yield vault for encrypted accounting and mainnet readiness.
+
 ## Links
 
 | Item                  | Link                                                                 |
