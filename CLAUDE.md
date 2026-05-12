@@ -118,11 +118,11 @@ All protocol details are in `docs/`:
 
 ## Progress Tracking
 
-実装の進捗や重要な決定事項は `.claude/MEMORY.md` に記録すること。
+Record implementation progress and important decisions in `.claude/MEMORY.md`.
 
-- 各Phaseの実装完了時に、何を実装したか・テスト結果・残課題を記録する
-- 設計上の重要な判断（例: ライブラリの選定理由、設計ドキュメントからの逸脱）も記録する
-- 新しい会話の開始時に `.claude/MEMORY.md` を読んで前回の実装状況を把握する
+- When each phase is completed, record what was implemented, test results, and remaining issues
+- Record important design decisions, such as library selection rationale or deviations from the design documents
+- At the start of a new conversation, read `.claude/MEMORY.md` to understand the previous implementation state
 
 ## Key Constants
 

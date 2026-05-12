@@ -9,55 +9,55 @@
 
 ## 1. Scope
 
-`subly402-svm-v1` は、x402 の HTTP envelope を維持したまま、支払いの意味論を「client が直接 on-chain transfer を出す」方式から「Nitro Enclave 内 vault balance を条件付きで予約し、後で batched settlement する」方式へ置き換える custom payment scheme である。
+`subly402-svm-v1` is a custom payment scheme that preserves the x402 HTTP envelope while replacing payment semantics from "the client directly submits an on-chain transfer" to "a vault balance inside a Nitro Enclave is conditionally reserved and later settled in batches."
 
-この spec が固定するもの:
+This spec fixes:
 
-- `PAYMENT-REQUIRED` の `accepts[]` に入る payment details
-- `PAYMENT-SIGNATURE` ヘッダに入る payment payload
-- provider と facilitator 間の `/verify` `/settle` `/cancel` `/attestation` API
-- payment idempotency / reservation / batch settlement の状態機械
+- Payment details included in `accepts[]` in `PAYMENT-REQUIRED`
+- Payment payload included in the `PAYMENT-SIGNATURE` header
+- `/verify` `/settle` `/cancel` `/attestation` APIs between provider and facilitator
+- State machines for payment idempotency / reservation / batch settlement
 
-この spec がまだ固定しないもの:
+This spec does not yet fix:
 
-- Phase 3 の provider TEE 間メッセージ
-- Ed25519 adaptor signature の exact transcript
-- signed offers / receipts など x402 extension との正式な相互運用
+- Phase 3 messages between provider TEEs
+- Exact Ed25519 adaptor signature transcript
+- Formal interoperability with x402 extensions such as signed offers / receipts
 
 ---
 
 ## 2. Compatibility Profile
 
-`subly402-svm-v1` は以下を維持する:
+`subly402-svm-v1` preserves the following:
 
-- client は paid resource に対して通常の HTTP request を送る
-- server は `402 Payment Required` を返す
-- client は `PAYMENT-SIGNATURE` を付けて request を再送する
-- server は facilitator に verify / settle を委譲する
-- server は `PAYMENT-RESPONSE` を返す
+- The client sends a normal HTTP request to the paid resource
+- The server returns `402 Payment Required`
+- The client resends the request with `PAYMENT-SIGNATURE`
+- The server delegates verify / settle to the facilitator
+- The server returns `PAYMENT-RESPONSE`
 
-`subly402-svm-v1` は以下を変更する:
+`subly402-svm-v1` changes the following:
 
-- `PAYMENT-SIGNATURE` の中身は raw Solana transfer transaction ではない
-- verify / settle 先は汎用 x402 facilitator ではなく、A402-aware facilitator である
-- on-chain settlement は per-request ではなく batched である
+- The contents of `PAYMENT-SIGNATURE` are not a raw Solana transfer transaction
+- The verify / settle target is an A402-aware facilitator, not a generic x402 facilitator
+- On-chain settlement is batched, not per-request
 
 ---
 
 ## 3. Roles
 
-- `Client`: provider へ request を送る buyer-side agent
-- `Provider`: paid resource を提供する HTTP server
-- `Facilitator`: Nitro Enclave 内で動く A402-aware verifier / reserver / settler
-- `ReceiptWatchtower`: 最新の `ParticipantReceipt` を保持し、enclave unavailable 時に stale receipt challenge を代行する
-- `Vault Program`: Solana 上の escrow / batch settlement / force-settle program
-- `Governance`: vault の pause / migration 告知だけを行う operator key
+- `Client`: buyer-side agent that sends requests to the provider
+- `Provider`: HTTP server that provides the paid resource
+- `Facilitator`: A402-aware verifier / reserver / settler running inside the Nitro Enclave
+- `ReceiptWatchtower`: stores the latest `ParticipantReceipt` and performs stale receipt challenges when the enclave is unavailable
+- `Vault Program`: escrow / batch settlement / force-settle program on Solana
+- `Governance`: operator key used only for vault pause / migration announcements
 
 ---
 
 ## 4. Seller Identity
 
-default の seller flow では、事前の provider 登録や API key 発行は不要である。Seller middleware は route ごとの `PAYMENT-REQUIRED` を返す時に `network`, `asset.mint`, `payTo` を含める。facilitator は最初の有効な `/verify` で、この組み合わせから open seller を自動登録する。
+The default seller flow does not require prior provider registration or API key issuance. Seller middleware includes `network`, `asset.mint`, and `payTo` when returning route-specific `PAYMENT-REQUIRED`. The facilitator automatically registers an open seller from this combination on the first valid `/verify`.
 
 open seller identity:
 
@@ -70,13 +70,13 @@ providerId = "payto_" || SHA-256(
 )[0..32]
 ```
 
-制約:
+Constraints:
 
-- `payTo` は seller が最終受領する SPL token account
-- Solana middleware は `sellerWallet` が渡された場合、その wallet owner の USDC ATA を `payTo` として自動導出してよい
-- open seller は `network`, `assetMint`, `payTo`, `vault` に束縛される
-- `providerId` を明示しない場合、middleware / facilitator は上記の deterministic id を使う
-- 明示的な `providerId`, mTLS, bearer/API-key 認証、ASC provider participant attestation が必要な seller は advanced registration flow を使う
+- `payTo` is the SPL token account where the seller ultimately receives funds
+- If `sellerWallet` is provided, Solana middleware may automatically derive that wallet owner's USDC ATA as `payTo`
+- An open seller is bound to `network`, `assetMint`, `payTo`, and `vault`
+- If `providerId` is not specified, middleware / facilitator use the deterministic id above
+- Sellers requiring explicit `providerId`, mTLS, bearer/API-key auth, or ASC provider participant attestation use the advanced registration flow
 
 advanced `ProviderRegistration`:
 
@@ -113,27 +113,27 @@ advanced `ProviderRegistration`:
 }
 ```
 
-制約:
+Constraints:
 
-- `providerId` は facilitator 内で一意
-- `settlementTokenAccount` は provider が最終受領する SPL token account
-- `authMode` は `bearer` / `api-key` / `mtls` をサポートする
-- `bearer` と `api-key` はどちらも provider secret の SHA-256 hash を facilitator へ登録し、`Authorization: Bearer ...` または `x-a402-provider-auth` で提示する
-- `allowedOrigins` は `/verify` 時に request origin と照合する
-- Phase 3 ASC provider は `participantPubkey` を持たなければならず、対応する `participantAttestation` を facilitator へ提示して attested registration を完了しなければならない
-- `participantAttestation.document` は Nitro attestation document または local-dev provider attestation document であり、signed user_data に `providerId`, `participantPubkey`, `attestationPolicyHash` を束縛しなければならない
-- facilitator は `participantAttestation.policy.pcrs` を attestation document と照合し、`participantAttestation.policy` から計算した policy hash が user_data の `attestationPolicyHash` と一致することを確認しなければならない
+- `providerId` is unique within the facilitator
+- `settlementTokenAccount` is the SPL token account where the provider ultimately receives funds
+- `authMode` supports `bearer` / `api-key` / `mtls`
+- Both `bearer` and `api-key` register a SHA-256 hash of the provider secret with the facilitator and present it via `Authorization: Bearer ...` or `x-a402-provider-auth`
+- `allowedOrigins` is checked against the request origin during `/verify`
+- Phase 3 ASC providers must have `participantPubkey` and must present the corresponding `participantAttestation` to the facilitator to complete attested registration
+- `participantAttestation.document` is either a Nitro attestation document or a local-dev provider attestation document, and must bind `providerId`, `participantPubkey`, and `attestationPolicyHash` in signed user_data
+- The facilitator must compare `participantAttestation.policy.pcrs` with the attestation document and confirm that the policy hash computed from `participantAttestation.policy` matches `attestationPolicyHash` in user_data
 
 ---
 
 ## 5. PAYMENT-REQUIRED Schema
 
-provider は `accepts[]` の各要素として以下を返す。
+The provider returns the following as each element of `accepts[]`.
 
-`402 Payment Required` response では、x402 v2 互換のため:
+For x402 v2 compatibility, the `402 Payment Required` response:
 
-- response header `PAYMENT-REQUIRED` に `{"accepts":[...]}` を Base64-encoded JSON で入れる
-- response body には同じ `accepts[]` を mirror してよい
+- Puts `{"accepts":[...]}` as Base64-encoded JSON in the `PAYMENT-REQUIRED` response header
+- May mirror the same `accepts[]` in the response body
 
 ```json
 {
@@ -161,43 +161,43 @@ provider は `accepts[]` の各要素として以下を返す。
 }
 ```
 
-必須フィールド:
+Required fields:
 
 | Field                         | Type    | Meaning                                                     |
 | ----------------------------- | ------- | ----------------------------------------------------------- |
-| `scheme`                      | string  | 固定値 `subly402-svm-v1`                                    |
-| `network`                     | string  | CAIP-2 形式の Solana network id                             |
-| `amount`                      | string  | atomic units の decimal string                              |
+| `scheme`                      | string  | Fixed value `subly402-svm-v1`                               |
+| `network`                     | string  | Solana network id in CAIP-2 format                          |
+| `amount`                      | string  | Decimal string in atomic units                              |
 | `asset.mint`                  | string  | SPL token mint                                              |
 | `payTo`                       | string  | provider settlement token account                           |
-| `providerId`                  | string  | open seller の deterministic id、または登録済み provider id |
-| `facilitatorUrl`              | string  | `/verify` `/settle` `/attestation` を提供する base URL      |
+| `providerId`                  | string  | Open seller deterministic id or registered provider id      |
+| `facilitatorUrl`              | string  | Base URL providing `/verify` `/settle` `/attestation`       |
 | `vault.config`                | string  | VaultConfig PDA                                             |
 | `vault.signer`                | string  | Enclave signer pubkey                                       |
 | `vault.attestationPolicyHash` | string  | attestation policy hash                                     |
-| `paymentDetailsId`            | string  | provider 発行の一意 id                                      |
-| `verifyWindowSec`             | integer | verify 後に `/settle` を待つ秒数                            |
-| `maxSettlementDelaySec`       | integer | provider credit が on-chain batch されるまでの最大遅延      |
+| `paymentDetailsId`            | string  | Unique id issued by the provider                            |
+| `verifyWindowSec`             | integer | Seconds to wait for `/settle` after verify                  |
+| `maxSettlementDelaySec`       | integer | Maximum delay before provider credit is batched on-chain    |
 
-`paymentDetailsHash` は、client / provider / facilitator で共通に次式で計算する:
+`paymentDetailsHash` is computed consistently by client / provider / facilitator as:
 
 ```text
 paymentDetailsHash = SHA-256(canonical_json(selected_accept_object))
 ```
 
-ここで `canonical_json` は:
+Here, `canonical_json` is:
 
 - UTF-8
-- key は辞書順
-- 余分な whitespace を入れない
-- integer は 10 進表記
-- string normalization は行わない
+- Keys sorted lexicographically
+- No extra whitespace
+- Integers in decimal notation
+- No string normalization
 
 ---
 
 ## 6. PAYMENT-SIGNATURE Payload
 
-`PAYMENT-SIGNATURE` ヘッダの値は、下記 JSON を UTF-8 エンコードし、Base64-encoded して送る。実装は後方互換のため Base64URL も受理してよい。
+The `PAYMENT-SIGNATURE` header value is the following JSON encoded as UTF-8 and sent as Base64-encoded data. Implementations may also accept Base64URL for backward compatibility.
 
 ```json
 {
@@ -219,17 +219,17 @@ paymentDetailsHash = SHA-256(canonical_json(selected_accept_object))
 }
 ```
 
-必須制約:
+Required constraints:
 
-- `paymentId` は client が一意に生成する
-- `vault` は `vault.config` と一致しなければならない
-- `payTo` は `payment details.payTo` と一致しなければならない
-- `expiresAt` は provider が受理する時点で未来でなければならない
-- `nonce` は client ローカルで重複禁止とする
+- `paymentId` is generated uniquely by the client
+- `vault` must match `vault.config`
+- `payTo` must match `payment details.payTo`
+- `expiresAt` must be in the future when the provider accepts it
+- `nonce` must not be reused locally by the client
 
 ### 6.1 Client Signature Message
 
-client は次の message を Ed25519 で署名する。
+The client signs the following message with Ed25519.
 
 ```text
 A402-SVM-V1-AUTH
@@ -249,13 +249,13 @@ expiresAt
 nonce
 ```
 
-各行は UTF-8 string とし、末尾に `\n` を付ける。整数は 10 進 string に変換する。
+Each line is a UTF-8 string ending with `\n`. Integers are converted to decimal strings.
 
 ---
 
 ## 7. Request Hash
 
-`requestHash` は paid request と payment authorization を結びつける。
+`requestHash` binds the paid request to the payment authorization.
 
 ```text
 requestHash = SHA-256(
@@ -268,39 +268,39 @@ requestHash = SHA-256(
 )
 ```
 
-規則:
+Rules:
 
-- `METHOD` は大文字 HTTP method
-- `ORIGIN` は `scheme://host[:port]`
-- `PATH_AND_QUERY` は raw path + raw query
-- `BODY_SHA256_HEX` は request body bytes の SHA-256
-- body が空なら empty byte string の SHA-256 を使う
+- `METHOD` is the uppercase HTTP method
+- `ORIGIN` is `scheme://host[:port]`
+- `PATH_AND_QUERY` is raw path + raw query
+- `BODY_SHA256_HEX` is the SHA-256 of the request body bytes
+- If the body is empty, use the SHA-256 of the empty byte string
 
-provider は `/verify` 時に受け取った request をこの規則で再計算し、facilitator へ渡す。
+The provider recomputes the received request using these rules during `/verify` and passes it to the facilitator.
 
 ---
 
 ## 8. Facilitator API
 
-base URL は `facilitatorUrl` とし、以下を提供する。
+The base URL is `facilitatorUrl` and provides the following.
 
 ### 8.0 Vault Status Semantics
 
-facilitator は on-chain の vault status と整合するように振る舞う。
+The facilitator behaves consistently with the on-chain vault status.
 
-- `Active`: `/verify`, `/settle`, `/cancel` を許可
-- `Paused`: `/verify`, `/settle`, `/cancel` を `503 vault_paused` で拒否
-- `Migrating`: 新規 `/verify` を `503 vault_migrating` で拒否し、既存 reservation に対する `/settle` と `/cancel` だけ `exit_deadline` まで許可
-- `Retired`: `/verify`, `/settle`, `/cancel` を拒否
+- `Active`: allows `/verify`, `/settle`, `/cancel`
+- `Paused`: rejects `/verify`, `/settle`, `/cancel` with `503 vault_paused`
+- `Migrating`: rejects new `/verify` with `503 vault_migrating`, and allows only `/settle` and `/cancel` for existing reservations until `exit_deadline`
+- `Retired`: rejects `/verify`, `/settle`, `/cancel`
 
-provider は `503 vault_paused` / `503 vault_migrating` を受けた場合、resource handler を継続してはならない。
+The provider must not continue the resource handler after receiving `503 vault_paused` / `503 vault_migrating`.
 
 ### 8.1 `GET /v1/attestation`
 
-用途:
+Uses:
 
-- client が Nitro Attestation を検証する
-- provider が facilitator の runtime policy を監査する
+- Client verifies Nitro Attestation
+- Provider audits the facilitator runtime policy
 
 response:
 
@@ -317,11 +317,11 @@ response:
 
 ### 8.2 `POST /v1/verify`
 
-認証:
+Authentication:
 
-- default open seller flow では provider API key は不要
-- advanced registered provider では `Authorization: Bearer <provider-api-key>` / API key header / mTLS を使ってよい
-- bearer mode では `x-subly402-provider-id` または `X-A402-Provider-Id` が provider identity を示す
+- The default open seller flow does not require a provider API key
+- Advanced registered providers may use `Authorization: Bearer <provider-api-key>` / API key header / mTLS
+- In bearer mode, `x-subly402-provider-id` or `X-A402-Provider-Id` indicates provider identity
 
 request:
 
@@ -352,33 +352,33 @@ response:
 }
 ```
 
-`/verify` で facilitator が必ず行う検証:
+Validations the facilitator must perform in `/verify`:
 
-1. open seller identity が `paymentDetails` / payload と一致する、または provider 認証が advanced registration と一致する
+1. The open seller identity matches `paymentDetails` / payload, or provider auth matches advanced registration
 2. `paymentDetails.scheme == "subly402-svm-v1"`
-3. `paymentDetails.verifyWindowSec` が正の整数である
-4. `paymentDetailsHash` が一致する
-5. `requestHash` が `requestContext` から再計算した値と一致する
-6. `clientSig` が有効
-7. `expiresAt` が未来
-8. `providerId`, `payTo`, `assetMint`, `network`, `vault` が open seller identity または advanced registration / vault config と一致する
-9. client の `free_balance >= amount`
-10. `paymentId` が未使用、または同一 request への idempotent replay である
-11. vault status が `Active` である
+3. `paymentDetails.verifyWindowSec` is a positive integer
+4. `paymentDetailsHash` matches
+5. `requestHash` matches the value recomputed from `requestContext`
+6. `clientSig` is valid
+7. `expiresAt` is in the future
+8. `providerId`, `payTo`, `assetMint`, `network`, and `vault` match the open seller identity or advanced registration / vault config
+9. The client's `free_balance >= amount`
+10. `paymentId` is unused, or this is an idempotent replay for the same request
+11. Vault status is `Active`
 
-`/verify` 成功時の副作用:
+Side effects on successful `/verify`:
 
 - `free_balance -= amount`
 - `locked_balance += amount`
 - `reservationExpiresAt = verified_at + verifyWindowSec`
-- reservation state を `RESERVED` にする
-- encrypted WAL に `ReservationCreated` を追記し、durable にしてから response を返す
+- Set reservation state to `RESERVED`
+- Append `ReservationCreated` to the encrypted WAL and return the response only after it is durable
 
 ### 8.3 `POST /v1/settle`
 
-認証:
+Authentication:
 
-- `/verify` と同じ。default open seller flow では settlement request は verification に束縛された seller identity で扱う。
+- Same as `/verify`. In the default open seller flow, settlement requests are handled with the seller identity bound to the verification.
 
 request:
 
@@ -403,48 +403,48 @@ response:
 }
 ```
 
-`/settle` 成功時の副作用:
+Side effects on successful `/settle`:
 
-- reservation state を `SETTLED_OFFCHAIN` にする
+- Set reservation state to `SETTLED_OFFCHAIN`
 - `locked_balance -= amount`
-- provider credit ledger に `amount` を加算する
-- provider 向け `ParticipantReceipt` を発行する
-- encrypted WAL に `SettlementCommitted` を追記し、durable にしてから response を返す
+- Add `amount` to the provider credit ledger
+- Issue a `ParticipantReceipt` for the provider
+- Append `SettlementCommitted` to the encrypted WAL and return the response only after it is durable
 
-`/settle` は reservation がまだ `RESERVED` であり、かつ `now <= reservationExpiresAt` の場合にのみ成功しなければならない。`verifyWindowSec` を過ぎた reservation は background sweeper を待たず、その request 自身で即座に `EXPIRED` に遷移し、locked balance を client free balance へ戻してから `reservation_expired` を返す。
+`/settle` must succeed only when the reservation is still `RESERVED` and `now <= reservationExpiresAt`. Reservations past `verifyWindowSec` do not wait for a background sweeper; the request itself immediately transitions them to `EXPIRED`, returns locked balance to client free balance, and then returns `reservation_expired`.
 
 ### 8.4 Provider Single-Execution Rule
 
-provider は `verificationId` を**一度だけ実行可能な capability**として扱わなければならない。
+The provider must treat `verificationId` as a **single-execution capability**.
 
-provider 側 middleware / server state の推奨状態:
+Recommended provider-side middleware / server states:
 
 - `VERIFIED_UNSERVED`
 - `EXECUTING`
 - `SERVED_SUCCESS`
 - `SERVED_ERROR`
 
-規則:
+Rules:
 
-1. 同じ `verificationId` に対して handler を起動できるのは 1 回だけ
-2. duplicate request が `EXECUTING` 中に来たら `409 duplicate_execution_in_flight` を返すか、同じ in-flight result を待ち合わせる
-3. duplicate request が `SERVED_SUCCESS` / `SERVED_ERROR` に来たら、元の HTTP status / body / `PAYMENT-RESPONSE` をそのまま返す
-4. clustered deployment では execution cache を共有ストアに置くか、`verificationId` で sticky routing しなければならない
+1. A handler may be started only once for the same `verificationId`
+2. If a duplicate request arrives while `EXECUTING`, return `409 duplicate_execution_in_flight` or wait for the same in-flight result
+3. If a duplicate request arrives after `SERVED_SUCCESS` / `SERVED_ERROR`, return the original HTTP status / body / `PAYMENT-RESPONSE` unchanged
+4. Clustered deployments must place the execution cache in shared storage or use sticky routing by `verificationId`
 
-この規則により、同じ signed authorization を複数回 replay しても resource handler は多重実行されない。
+These rules prevent multiple executions of the resource handler even if the same signed authorization is replayed multiple times.
 
 ### 8.5 `POST /v1/cancel`
 
-用途:
+Use:
 
-- provider が service 実行前に reservation を明示的に解放する
+- Provider explicitly releases a reservation before executing the service
 
-認証:
+Authentication:
 
-- `/verify` と同じ（`Authorization: Bearer <provider-api-key>` または mTLS）
-- facilitator は `/verify` response 時に `verificationId` と `providerId` を紐づけて記録する
-- `/cancel` request の認証から取得した `providerId` が、当該 `verificationId` の発行先と一致しない場合は `403 provider_mismatch` を返す
-- 第三者による reservation の不正キャンセルを防止する
+- Same as `/verify` (`Authorization: Bearer <provider-api-key>` or mTLS)
+- The facilitator records the association between `verificationId` and `providerId` when returning the `/verify` response
+- If the `providerId` obtained from `/cancel` request authentication does not match the issuer of that `verificationId`, return `403 provider_mismatch`
+- This prevents unauthorized third-party reservation cancellation
 
 request:
 
@@ -466,9 +466,9 @@ response:
 
 ### 8.6 PAYMENT-RESPONSE Schema
 
-provider は response header `PAYMENT-RESPONSE` に少なくとも次を入れる。
+The provider puts at least the following in the `PAYMENT-RESPONSE` response header.
 
-header 値は Base64-encoded JSON とする。
+The header value is Base64-encoded JSON.
 
 ```json
 {
@@ -482,17 +482,17 @@ header 値は Base64-encoded JSON とする。
 }
 ```
 
-意味:
+Meaning:
 
-- `batchId == null` かつ `txSignature == null`: off-chain settled 済み、まだ on-chain batch 前
-- batch 完了後に provider が照会する場合、`batchId` と `txSignature` を取得できる
-- `participantReceipt` は provider force-settle の根拠になる
+- `batchId == null` and `txSignature == null`: settled off-chain, not yet batched on-chain
+- If the provider queries after batch completion, it can retrieve `batchId` and `txSignature`
+- `participantReceipt` is the basis for provider force-settle
 
 ---
 
 ## 9. State Machine and Idempotency
 
-`paymentId` ごとの状態:
+States per `paymentId`:
 
 - `UNSEEN`
 - `RESERVED`
@@ -501,7 +501,7 @@ header 値は Base64-encoded JSON とする。
 - `SETTLED_OFFCHAIN`
 - `BATCHED_ONCHAIN`
 
-遷移:
+Transitions:
 
 ```text
 UNSEEN --verify--> RESERVED
@@ -513,102 +513,102 @@ SETTLED_OFFCHAIN --batch confirmed--> BATCHED_ONCHAIN
 
 idempotency rules:
 
-- 同じ `paymentId` + 同じ `requestHash` + 同じ `paymentDetailsHash` での `/verify` 再試行は、同じ `verificationId` を返す
-- 同じ `paymentId` で request binding が異なる場合は `409 payment_id_reused`
-- `SETTLED_OFFCHAIN` に対する `/settle` 再試行は、同じ `settlementId` を返す
-- `CANCELLED` / `EXPIRED` 済み payment への `/settle` は拒否する
+- `/verify` retries with the same `paymentId` + same `requestHash` + same `paymentDetailsHash` return the same `verificationId`
+- If request binding differs for the same `paymentId`, return `409 payment_id_reused`
+- `/settle` retries against `SETTLED_OFFCHAIN` return the same `settlementId`
+- Reject `/settle` for payments already `CANCELLED` / `EXPIRED`
 
-provider 側 execution cache rules:
+Provider-side execution cache rules:
 
-- 同じ `verificationId` の duplicate request は新しい execute を起こしてはならない
-- provider が clustered deployment の場合、execution cache は共有ストアまたは sticky routing で一貫させなければならない
+- Duplicate requests for the same `verificationId` must not trigger a new execution
+- If the provider uses a clustered deployment, the execution cache must be made consistent through shared storage or sticky routing
 
 ---
 
 ## 10. Batch Settlement
 
-facilitator は provider ごとの off-chain credit を持ち、on-chain では `settle_vault` でまとめて払う。
+The facilitator keeps off-chain credit per provider and pays it on-chain in aggregate with `settle_vault`.
 
 ### 10.1 Batch Trigger
 
-Phase 1 推奨値:
+Phase 1 recommended values:
 
-- `BATCH_WINDOW_SEC = 120`（env `SUBLY402_BATCH_WINDOW_SEC`）
+- `BATCH_WINDOW_SEC = 120` (env `SUBLY402_BATCH_WINDOW_SEC`)
 - `MAX_SETTLEMENT_DELAY_SEC = 900`
 - `MAX_SETTLEMENTS_PER_TX = 20`
 - `JITTER_SEC = 0..30`
 
-batch は以下のいずれかで発火する:
+Batches are triggered by any of the following:
 
-1. batch window 経過
-2. pending provider count が `MAX_SETTLEMENTS_PER_TX` に達した
-3. oldest batch-eligible settlement が `MAX_SETTLEMENT_DELAY_SEC` に達した
+1. Batch window elapsed
+2. Pending provider count reached `MAX_SETTLEMENTS_PER_TX`
+3. Oldest batch-eligible settlement reached `MAX_SETTLEMENT_DELAY_SEC`
 
 ### 10.2 Privacy Rules
 
-- 単一 request ごとに on-chain settle してはならない
-- 可能な限り複数 provider を同一 batch に混ぜる
-- pending credit の選択は provider 間で round-robin に行い、1 provider の連続採用で batch が単独化しないようにする
-- facilitator SHOULD defer automatic batch inclusion for provider credits smaller than a configured payout floor (Phase 1 推奨: `AUTO_BATCH_MIN_PROVIDER_PAYOUT = 1_000_000` atomic units = 1 USDC) and wait for aggregation, unless `MAX_SETTLEMENT_DELAY_SEC` has been reached
-- batch submit 時刻には jitter を入れる
-- provider には `/settle` 成功時点で off-chain receipt を返し、on-chain 着金より前に credit を確定させる
-- `MIN_ANONYMITY_WINDOW_SEC = 300`（Phase 1 public default、env `SUBLY402_MIN_ANONYMITY_WINDOW_SEC`）: 各 settlement は age がこの値に達するまで automatic batch の対象外になる。old sibling が先に支払い対象になっても、fresh sibling は window を満たすまで vault 内で aging を続ける。batch cadence から独立して個別 settlement に最低待機時間を与えるための time-based anonymity gate。
-- `MIN_BATCH_PROVIDERS = 2`（Phase 1 public default、env `SUBLY402_MIN_BATCH_PROVIDERS`）: batch 内の provider 数がこの値未満の場合、`MAX_SETTLEMENT_DELAY_SEC` まで待機して他の provider の credit と合流させる。最後尾の atomic chunk が単独 provider になる場合も liveness deadline まで保留する。いずれにせよ settle_vault tx は Vault→Provider の送金のみで client 情報は含まれないため、linkability は「この期間にこの provider 群を使った誰かがいる」レベルに留まる
+- Do not settle on-chain per individual request
+- Mix multiple providers into the same batch whenever possible
+- Select pending credit round-robin across providers so a batch does not become single-provider through consecutive selection of one provider
+- The facilitator SHOULD defer automatic batch inclusion for provider credits smaller than a configured payout floor (Phase 1 recommendation: `AUTO_BATCH_MIN_PROVIDER_PAYOUT = 1_000_000` atomic units = 1 USDC) and wait for aggregation, unless `MAX_SETTLEMENT_DELAY_SEC` has been reached
+- Add jitter to batch submit time
+- Return an off-chain receipt to the provider when `/settle` succeeds, and finalize credit before on-chain arrival
+- `MIN_ANONYMITY_WINDOW_SEC = 300` (Phase 1 public default, env `SUBLY402_MIN_ANONYMITY_WINDOW_SEC`): each settlement is excluded from automatic batching until its age reaches this value. Even if an older sibling is paid first, a fresh sibling continues aging in the vault until it satisfies the window. This is a time-based anonymity gate that gives each settlement a minimum waiting period independent of batch cadence.
+- `MIN_BATCH_PROVIDERS = 2` (Phase 1 public default, env `SUBLY402_MIN_BATCH_PROVIDERS`): if the number of providers in a batch is below this value, wait until `MAX_SETTLEMENT_DELAY_SEC` so the credit can join credit from other providers. If the trailing atomic chunk would be single-provider, hold it until the liveness deadline as well. In all cases, `settle_vault` txs contain only Vault-to-Provider transfers and no client information, so linkability remains at the level of "someone used this provider set during this period."
 
 ### 10.3 Batch Receipts
 
-batch confirm 後、facilitator は `settlementId -> batchId -> txSignature` を記録し、後続の監査と dispute に使う。
+After batch confirmation, the facilitator records `settlementId -> batchId -> txSignature` for later audit and dispute use.
 
 ---
 
 ## 11. Failure Semantics
 
-- participant receipt の意味論:
+- Participant receipt semantics:
 
-  - client receipt は `freeBalance`, `lockedBalance`, `maxLockExpiresAt` を持つ
-  - provider receipt は `lockedBalance = 0`, `maxLockExpiresAt = 0` を持つ
+  - Client receipts have `freeBalance`, `lockedBalance`, and `maxLockExpiresAt`
+  - Provider receipts have `lockedBalance = 0`, `maxLockExpiresAt = 0`
 
-- `/verify` 成功後に provider が落ちた場合:
+- If the provider fails after successful `/verify`:
 
-  - reservation は `verifyWindowSec` 経過で `EXPIRED`
-  - locked balance は client free balance に戻る
+  - The reservation becomes `EXPIRED` after `verifyWindowSec`
+  - Locked balance returns to client free balance
 
-- `/settle` 成功後に provider への HTTP response が失われた場合:
+- If the HTTP response to the provider is lost after successful `/settle`:
 
-  - provider は同じ `verificationId` で `/settle` を再試行する
-  - facilitator は同じ `settlementId` を返す
+  - The provider retries `/settle` with the same `verificationId`
+  - The facilitator returns the same `settlementId`
 
-- enclave crash 後の再起動:
+- Restart after enclave crash:
 
-  - encrypted snapshot + WAL から recovery する
-  - 未 batch の provider credit は provider receipt で force-settle 可能
-  - client は participant receipt を使い、`freeBalance` を dispute window 後に回収できる
-  - 最新 receipt に `lockedBalance > 0` が残っている場合、その portion は `maxLockExpiresAt` 経過後に同じ force-settle request から回収できる
-  - stale receipt challenge のため、ReceiptWatchtower は最新 receipt を保持していなければならない
+  - Recover from encrypted snapshot + WAL
+  - Unbatched provider credit can be force-settled with the provider receipt
+  - The client can use a participant receipt to recover `freeBalance` after the dispute window
+  - If the latest receipt still has `lockedBalance > 0`, that portion can be recovered from the same force-settle request after `maxLockExpiresAt`
+  - ReceiptWatchtower must store the latest receipt for stale receipt challenges
 
-- on-chain batch 提出時に paired audit chunk が失敗した場合:
-  - Solana transaction 全体が rollback される
-  - provider credit は `SETTLED_OFFCHAIN` のまま残り、後続 batch window で再送する
+- If the paired audit chunk fails during on-chain batch submission:
+  - The entire Solana transaction rolls back
+  - Provider credit remains `SETTLED_OFFCHAIN` and is resent in a later batch window
 
 ---
 
 ## 12. Security Invariants
 
-- on-chain observer は `client -> provider` の直接対応を見られない
-- parent instance は payment payload, request body, secret key, vault balances を読めない
-- provider は facilitator verify を経ずに credit を得られない
-- 同じ `paymentId` を別 request に流用できない
-- facilitator は durable WAL へ書く前に verify / settle success を返してはならない
-- audit mode が有効なとき、on-chain settlement chunk は matching audit chunk と同一 transaction に入らなければならない
-- vault unavailability 時も participant receipt により client / provider の残高は回収可能でなければならない
-- client の locked portion は、その receipt に束縛された `maxLockExpiresAt` 経過後に回収可能でなければならない
-- participant receipt による回収可能性は、少なくとも 1 つの honest available ReceiptWatchtower が存在し、かつ vault が solvent である前提で成り立つ
-- Phase 3 ASC では provider が `/channel/deliver` で提示する `providerPubkey` は registration の `participantPubkey` と一致しなければならず、`participantPubkey` 未登録の provider は `/channel/open` を開始できない
+- On-chain observers cannot see direct `client -> provider` correspondence
+- The parent instance cannot read payment payloads, request bodies, secret keys, or vault balances
+- Providers cannot obtain credit without facilitator verify
+- The same `paymentId` cannot be reused for a different request
+- The facilitator must not return verify / settle success before writing to durable WAL
+- When audit mode is enabled, on-chain settlement chunks must be in the same transaction as their matching audit chunk
+- Client / provider balances must remain recoverable by participant receipt even when the vault is unavailable
+- The client's locked portion must be recoverable after `maxLockExpiresAt` bound to that receipt
+- Recoverability through participant receipts assumes at least one honest available ReceiptWatchtower and a solvent vault
+- In Phase 3 ASC, the `providerPubkey` presented by the provider in `/channel/deliver` must match the registration `participantPubkey`, and providers without a registered `participantPubkey` cannot start `/channel/open`
 
 ---
 
 ## 13. Open Items
 
-- provider auth を `bearer` と `mtls` のどちらで標準化するか
-- `requestHash` に signed offers / payment identifier extension を必須化するか
-- Phase 3 で `verificationId` と ASC `rid` をどう対応付けるか
+- Whether provider auth should standardize on `bearer` or `mtls`
+- Whether `requestHash` should require signed offers / payment identifier extensions
+- How Phase 3 should map `verificationId` to ASC `rid`

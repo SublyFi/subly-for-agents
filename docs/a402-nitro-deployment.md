@@ -9,20 +9,20 @@
 
 ## 1. Goals
 
-この文書は、A402-Solana の facilitator / vault runtime を AWS Nitro Enclaves 上で運用するための配備・復旧・移行仕様を定義する。
+This document defines the deployment, recovery, and migration specification for operating the A402-Solana facilitator / vault runtime on AWS Nitro Enclaves.
 
-Phase 1 の目標:
+Phase 1 goals:
 
-- request / response の平文を parent instance に見せない
-- vault signer / auditor secret / snapshot key を parent instance に見せない
-- Nitro attestation と KMS policy を組み合わせて enclave identity を固定する
-- enclave crash 後に encrypted snapshot / WAL から復旧できる
+- Keep request / response plaintext hidden from the parent instance
+- Keep the vault signer / auditor secret / snapshot key hidden from the parent instance
+- Pin the enclave identity by combining Nitro attestation with KMS policy
+- Recover from encrypted snapshot / WAL after an enclave crash
 
-Phase 1 の非目標:
+Phase 1 non-goals:
 
 - multi-active enclave consensus
 - cross-region BFT replication
-- provider-side enclave の配備
+- Provider-side enclave deployment
 
 ---
 
@@ -58,17 +58,17 @@ Phase 1 の非目標:
 
 ## 3. AWS Components
 
-最小構成:
+Minimum configuration:
 
 - 1 x EC2 parent instance
 - 1 x Nitro Enclave
 - 1 x Network Load Balancer
 - 1 x customer-managed KMS key for seed/state unwrap
-- 1 x S3 bucket または encrypted EBS volume for snapshot/WAL
+- 1 x S3 bucket or encrypted EBS volume for snapshot/WAL
 - 1 x Solana RPC provider
 - 1 x Receipt Watchtower service
 
-推奨追加:
+Recommended additions:
 
 - CloudWatch logs / metrics
 - separate watcher instance for Solana finality / force-settle monitoring
@@ -80,34 +80,34 @@ Phase 1 の非目標:
 
 ### Parent Instance
 
-parent instance は**信頼しない**。責務は可用性と中継だけに限定する。
+The parent instance is **untrusted**. Its responsibilities are limited to availability and relaying.
 
-許可する責務:
+Allowed responsibilities:
 
-- TCP ingress を vsock に中継する
-- enclave からの outbound TLS byte stream を internet へ中継する
-- KMS proxy process を起動する
-- encrypted snapshot / WAL blob を保存する
-- health checks と process supervision を行う
+- Relay TCP ingress to vsock
+- Relay outbound TLS byte streams from the enclave to the internet
+- Start the KMS proxy process
+- Store encrypted snapshot / WAL blobs
+- Perform health checks and process supervision
 
-禁止する責務:
+Forbidden responsibilities:
 
 - TLS termination
 - request body parsing
-- Solana signer 所持
-- payment verification / settlement logic 実行
-- snapshot 平文の保持
+- Holding the Solana signer
+- Running payment verification / settlement logic
+- Holding snapshot plaintext
 
 ### Enclave
 
-enclave が保持する秘密:
+Secrets held by the enclave:
 
 - vault signer seed
 - auditor master secret
 - decrypted snapshot / in-memory state
-- provider/client receipts の signing context
+- Signing context for provider/client receipts
 
-enclave が実行するロジック:
+Logic executed by the enclave:
 
 - `/attestation`, `/verify`, `/settle`, `/cancel`
 - deposit detection
@@ -117,24 +117,24 @@ enclave が実行するロジック:
 
 ### Receipt Watchtower
 
-Receipt Watchtower は Phase 4 の trust-minimized asset recovery に**必須**とする。
+Receipt Watchtower is **required** for Phase 4 trust-minimized asset recovery.
 
-責務:
+Responsibilities:
 
-- 最新の `ParticipantReceipt` を participant ごとに保持する
-- `force_settle_init` を監視する
-- より新しい receipt があれば `force_settle_challenge` を送る
+- Store the latest `ParticipantReceipt` for each participant
+- Monitor `force_settle_init`
+- Send `force_settle_challenge` when a newer receipt is available
 
-許可する責務:
+Allowed responsibilities:
 
-- receipt metadata の保持（`freeBalance`, `lockedBalance`, `maxLockExpiresAt`, `nonce` を含む）
-- Solana watch / challenge transaction 提出
+- Store receipt metadata, including `freeBalance`, `lockedBalance`, `maxLockExpiresAt`, and `nonce`
+- Watch Solana and submit challenge transactions
 
-禁止する責務:
+Forbidden responsibilities:
 
 - facilitator signing
-- request body 取得
-- payment verification logic 実行
+- Accessing request bodies
+- Running payment verification logic
 
 ---
 
@@ -142,31 +142,31 @@ Receipt Watchtower は Phase 4 の trust-minimized asset recovery に**必須**�
 
 ### 5.1 Required Property
 
-client / provider と facilitator 間の TLS は enclave 内で終端しなければならない。
+TLS between the client / provider and facilitator must terminate inside the enclave.
 
-そのため:
+Therefore:
 
-- **NLB TCP mode** を使う
-- **ALB は使わない**
-- **ACM for Nitro Enclaves with nginx on parent** も Phase 1 では採用しない
+- Use **NLB TCP mode**
+- **Do not use ALB**
+- **ACM for Nitro Enclaves with nginx on parent** is also not used in Phase 1
 
-理由:
+Reasons:
 
-- ALB は HTTP/TLS を parent 手前で復号する
-- ACM for Nitro + nginx は private key を enclave に隔離できるが、HTTP plaintext は parent nginx が見る
-- A402 の privacy goal では、request path/body/payment payload を parent から隠す必要がある
+- ALB decrypts HTTP/TLS before the parent
+- ACM for Nitro + nginx can isolate the private key inside the enclave, but parent nginx still sees HTTP plaintext
+- A402 privacy goals require hiding request path/body/payment payload from the parent
 
 ### 5.2 Listener Layout
 
 - NLB: TCP/443 -> parent instance port 443
-- parent `ingress_relay`: TCP/443 を raw byte stream のまま vsock/8443 へ転送
-- enclave: vsock/8443 上で rustls + HTTP server を起動
+- parent `ingress_relay`: forwards TCP/443 as a raw byte stream to vsock/8443
+- enclave: runs rustls + HTTP server on vsock/8443
 
 ---
 
 ## 6. Egress Path
 
-Nitro Enclave は直接ネットワークを持たないため、outbound は parent relay 経由にする。
+Nitro Enclaves have no direct network access, so outbound traffic goes through the parent relay.
 
 ### 6.1 Traffic Classes
 
@@ -177,11 +177,11 @@ Nitro Enclave は直接ネットワークを持たないため、outbound は pa
 
 ### 6.2 Rules
 
-- TLS session は enclave 内で作る
-- parent は destination IP/port への byte pipe のみ提供する
-- outbound destination allowlist を parent firewall で制限する
+- Create TLS sessions inside the enclave
+- The parent only provides a byte pipe to the destination IP/port
+- Restrict outbound destinations with a parent firewall allowlist
 
-推奨 allowlist:
+Recommended allowlist:
 
 - configured Solana RPC endpoint
 - configured provider domains
@@ -199,7 +199,7 @@ deployment artifact:
 - enclave manifest
 - attestation policy JSON
 
-最低限固定する PCR:
+PCRs to pin at minimum:
 
 - `PCR0`: image measurement
 - `PCR1`: kernel / bootstrap measurement
@@ -209,7 +209,7 @@ deployment artifact:
 
 ### 7.2 Attestation Policy Hash
 
-on-chain に固定する `attestation_policy_hash` は次を canonical JSON 化して SHA-256 する。
+The `attestation_policy_hash` pinned on-chain is the SHA-256 of the following canonical JSON.
 
 ```json
 {
@@ -229,7 +229,7 @@ on-chain に固定する `attestation_policy_hash` は次を canonical JSON 化�
 
 ### 7.3 KMS Keys
 
-Phase 1 では少なくとも 2 種類の鍵を使う。
+Phase 1 uses at least two types of keys.
 
 - `a402-root-key`
   - vault signer seed
@@ -237,45 +237,45 @@ Phase 1 では少なくとも 2 種類の鍵を使う。
   - snapshot master key wrapping
 
 - `a402-snapshot-data-key`
-  - snapshot / WAL blob の content encryption
+  - Content encryption for snapshot / WAL blobs
 
 ### 7.4 KMS Policy Requirements
 
-KMS key policy は Nitro attestation condition keys で制限する。
+KMS key policy is restricted by Nitro attestation condition keys.
 
-意図:
+Intent:
 
-- parent instance IAM role だけでは decrypt できない
-- attested enclave が出した attestation document がないと data key を受け取れない
-- 許可された PCR set と EIF signer 以外は拒否される
+- The parent instance IAM role alone cannot decrypt
+- A data key cannot be received without an attestation document produced by an attested enclave
+- Anything outside the allowed PCR set and EIF signer is rejected
 
 ### 7.5 Bootstrap Sequence
 
-1. parent が enclave を起動する
-2. enclave が ephemeral bootstrap key pair を生成する
-3. enclave が attestation document を作る
-4. kmstool / KMS proxy 経由で `Decrypt` または `GenerateDataKey` を呼ぶ
-5. KMS は attestation 条件を確認し、response を enclave public key に束縛して返す
-6. enclave が vault signer seed と snapshot key material を復元する
-7. snapshot/WAL recovery を完了してから facilitator API を `ready` にする
+1. The parent starts the enclave
+2. The enclave generates an ephemeral bootstrap key pair
+3. The enclave creates an attestation document
+4. The enclave calls `Decrypt` or `GenerateDataKey` through kmstool / KMS proxy
+5. KMS checks the attestation conditions and returns a response bound to the enclave public key
+6. The enclave restores the vault signer seed and snapshot key material
+7. The facilitator API becomes `ready` only after snapshot/WAL recovery is complete
 
-注記:
+Notes:
 
-- step 3 の bootstrap document は KMS recipient key を束縛するためのものであり、client に返す `/v1/attestation` document と同一である必要はない
-- facilitator は serving 時に NSM で新しい runtime attestation document を生成し、`user_data` に `vault_signer`, `attestation_policy_hash`, `snapshot_seqno` を、`public_key` に ingress TLS public key を束縛する
+- The bootstrap document in step 3 binds the KMS recipient key and does not need to be identical to the `/v1/attestation` document returned to clients
+- During serving, the facilitator generates a fresh runtime attestation document with NSM and binds `vault_signer`, `attestation_policy_hash`, and `snapshot_seqno` in `user_data`, plus the ingress TLS public key in `public_key`
 
 ---
 
 ## 8. Persistence Model
 
-Nitro Enclave には永続ディスクがないため、state persistence は次の二層で構成する。
+Because Nitro Enclaves have no persistent disk, state persistence has two layers.
 
 - encrypted WAL
 - encrypted snapshot
 
 ### 8.1 WAL Entry Types
 
-最低限必要な event:
+Minimum required events:
 
 - `DepositApplied`
 - `ReservationCreated`
@@ -291,32 +291,32 @@ Nitro Enclave には永続ディスクがないため、state persistence は次
 
 ### 8.2 Commit Rule
 
-`/verify` と `/settle` の response を返す前に:
+Before returning `/verify` and `/settle` responses:
 
-1. 対応する WAL entry を生成する
-2. data key で暗号化する
-3. parent の `snapshot_store` に append する
-4. append ack を受ける
-5. その後にのみ success response を返す
+1. Generate the corresponding WAL entry
+2. Encrypt it with the data key
+3. Append it to the parent's `snapshot_store`
+4. Receive the append ack
+5. Return the success response only after that
 
-この順序を破ると、enclave crash 時に provider/client へ返した receipt と内部 state が不整合になる。
+Breaking this ordering can make receipts returned to providers/clients inconsistent with internal state after an enclave crash.
 
-`ParticipantReceipt` 発行時は追加で:
+When issuing a `ParticipantReceipt`, additionally:
 
-1. `ParticipantReceiptIssued` をWALへ記録する
-2. Receipt Watchtower へ同期し、ack を受ける
-3. `ParticipantReceiptMirrored` をWALへ記録する
+1. Record `ParticipantReceiptIssued` in the WAL
+2. Sync to Receipt Watchtower and receive an ack
+3. Record `ParticipantReceiptMirrored` in the WAL
 
-Phase 4 の stale receipt safety は、この mirror step が durable に完了していることを前提とする。
+Phase 4 stale receipt safety assumes this mirror step has completed durably.
 
 ### 8.3 Snapshot Rule
 
-推奨:
+Recommended:
 
 - `SNAPSHOT_EVERY_N_EVENTS = 1000`
 - `SNAPSHOT_EVERY_SEC = 30`
 
-snapshot には以下を含める:
+Snapshots include:
 
 - vault balances
 - active reservations
@@ -328,18 +328,18 @@ snapshot には以下を含める:
 
 ### 8.4 Recovery Sequence
 
-1. latest complete snapshot をロード
-2. snapshot seqno より後ろの WAL を順に再生
-3. in-flight batch を Solana chain と照合する
-4. deposit catch-up: `last_finalized_slot` 以降の deposit を再取得して取りこぼしを補正する
-   a. `getSignaturesForAddress(vault_token_account, { until: <last_processed_signature>, commitment: "finalized" })` で deposit tx の signature 一覧を取得
-   b. 各 signature について `getTransaction(sig, { commitment: "finalized" })` を取得し、deposit instruction の client signer / amount を検証
-   c. WAL に `DepositApplied` として記録済みの tx は skip
-   d. 未記録の deposit を `client_balances[client].free += amount` し、WAL に `DepositApplied` を追記
-   e. `last_finalized_slot` を更新
-5. ready になるまで `/verify` と `/settle` は `503 recovering`
+1. Load the latest complete snapshot
+2. Replay WAL entries after the snapshot seqno in order
+3. Reconcile in-flight batches with the Solana chain
+4. Deposit catch-up: re-fetch deposits after `last_finalized_slot` and repair missed entries
+   a. Fetch the deposit tx signature list with `getSignaturesForAddress(vault_token_account, { until: <last_processed_signature>, commitment: "finalized" })`
+   b. For each signature, fetch `getTransaction(sig, { commitment: "finalized" })` and verify the deposit instruction's client signer / amount
+   c. Skip txs already recorded in the WAL as `DepositApplied`
+   d. Apply unrecorded deposits with `client_balances[client].free += amount` and append `DepositApplied` to the WAL
+   e. Update `last_finalized_slot`
+5. `/verify` and `/settle` return `503 recovering` until ready
 
-このロジックは定常運用時の WebSocket 切断→再接続時の catch-up と共通化する（a402-solana-design.md §5.6 参照）。
+This logic is shared with catch-up after WebSocket disconnect/reconnect during steady-state operation. See a402-solana-design.md §5.6.
 
 ---
 
@@ -347,51 +347,51 @@ snapshot には以下を含める:
 
 ### 9.1 Initial Bootstrap
 
-1. Terraform で VPC, NLB, EC2, IAM, KMS, S3/EBS を作成
-2. signed EIF を build する
-3. PCR 値と `attestation_policy_hash` を確定する
-4. `initialize_vault` で `vault_signer_pubkey` と `attestation_policy_hash` を on-chain に固定する
-5. enclave を起動し、bootstrap/recovery 完了後に traffic を流す
+1. Create VPC, NLB, EC2, IAM, KMS, and S3/EBS with Terraform
+2. Build the signed EIF
+3. Finalize PCR values and `attestation_policy_hash`
+4. Pin `vault_signer_pubkey` and `attestation_policy_hash` on-chain with `initialize_vault`
+5. Start the enclave and send traffic after bootstrap/recovery completes
 
 ### 9.2 Upgrading Enclave Code
 
-コード upgrade では signer を on-chain で直接差し替えない。
+Code upgrades do not replace the signer directly on-chain.
 
-手順:
+Procedure:
 
-1. 新 EIF を build して新 PCR を確定する
-2. 新 vault を別アドレスで deploy する
-3. `announce_migration(successor_vault, exit_deadline)` を旧 vault に送る
-4. 新規 traffic は新 vault へ送る
-5. 旧 vault の client / provider balances は participant force-settle または cooperative withdrawal で解放する
-   - client receipt に `lockedBalance > 0` がある場合、その portion は `maxLockExpiresAt` 経過後に回収される
-6. exit window 後に旧 vault を停止する
+1. Build a new EIF and finalize new PCRs
+2. Deploy a new vault at a separate address
+3. Send `announce_migration(successor_vault, exit_deadline)` to the old vault
+4. Route new traffic to the new vault
+5. Release client / provider balances in the old vault through participant force-settle or cooperative withdrawal
+   - If the client receipt has `lockedBalance > 0`, that portion is recoverable after `maxLockExpiresAt`
+6. Stop the old vault after the exit window
 
 ### 9.2.1 Auditor Rotation
 
-監査鍵ローテーションは future-only とする。
+Auditor key rotation is future-only.
 
-1. governance が新しい auditor master secret を attested admin channel で enclave に投入する
-2. enclave が新 secret の public key を生成して提示する
-3. governance が `rotate_auditor(new_auditor_master_pubkey)` を送る
-4. 以後の AuditRecord は新 `auditor_epoch` で暗号化する
-5. 旧 epoch の secret は historical decryption 用に監査側で保管する
+1. Governance injects the new auditor master secret into the enclave over an attested admin channel
+2. The enclave generates and presents the public key for the new secret
+3. Governance sends `rotate_auditor(new_auditor_master_pubkey)`
+4. Subsequent AuditRecords are encrypted with the new `auditor_epoch`
+5. The auditor stores old epoch secrets for historical decryption
 
 ### 9.3 Warm Standby
 
-Phase 1 の HA は active/passive のみを許可する。
+Phase 1 HA only permits active/passive.
 
-- active enclave だけが verify / settle を受ける
-- standby enclave は traffic を受けず、snapshot blob のみ同期する
-- failover 時は standby が bootstrap + recovery を完了してから NLB target を切り替える
+- Only the active enclave receives verify / settle traffic
+- The standby enclave receives no traffic and only syncs snapshot blobs
+- During failover, switch the NLB target only after the standby completes bootstrap + recovery
 
-active-active は attested replication protocol が入るまで禁止する。
+Active-active is forbidden until an attested replication protocol exists.
 
 ---
 
 ## 10. Monitoring
 
-最低限の指標:
+Minimum metrics:
 
 - enclave bootstrap latency
 - `/verify` p50 / p95 / error rate
@@ -405,7 +405,7 @@ active-active は attested replication protocol が入るまで禁止する。
 - force-settle requests count
 - `vault_insolvent` error count
 
-最低限の alert:
+Minimum alerts:
 
 - attestation drift
 - KMS decrypt failure
@@ -419,72 +419,72 @@ active-active は attested replication protocol が入るまで禁止する。
 
 ### 11.1 Suspected Parent Compromise
 
-想定:
+Assumptions:
 
-- parent root 奪取
-- relay process 改ざん
-- disk snapshot 流出
+- Parent root compromise
+- Relay process tampering
+- Disk snapshot leak
 
-対応:
+Response:
 
-1. `pause_vault()` で新規 verify / settle を止める
-2. enclave の attestation と signer が不変か確認する
-3. 新 parent + 新 enclave を別ホストで立ち上げる
-4. 旧 vault から migration を告知する
+1. Stop new verify / settle with `pause_vault()`
+2. Confirm the enclave attestation and signer are unchanged
+3. Bring up a new parent + new enclave on a separate host
+4. Announce migration from the old vault
 
-期待される性質:
+Expected property:
 
-- parent compromise 単独では signer seed と snapshot plaintext は漏れない
+- Parent compromise alone does not leak the signer seed or snapshot plaintext
 
 ### 11.2 Suspected Enclave Compromise
 
-想定:
+Assumptions:
 
 - attestation mismatch
 - unexpected signer
 - PCR drift
 
-対応:
+Response:
 
-1. 即時に traffic を遮断する
-2. `pause_vault()` を実行する
-3. 新 vault を deploy して migration を告知する
-4. participant に cooperative withdrawal / force-settle を促す
-5. Receipt Watchtower が stale receipt challenge を継続できることを確認する
-6. `vault_insolvent` が発生した場合、partial payout は行わず top-up または別途resolution手順へ移る
+1. Cut traffic immediately
+2. Run `pause_vault()`
+3. Deploy a new vault and announce migration
+4. Ask participants to use cooperative withdrawal / force-settle
+5. Confirm Receipt Watchtower can continue stale receipt challenges
+6. If `vault_insolvent` occurs, do not perform partial payouts; top up or move to a separate resolution procedure
 
 ### 11.3 KMS Outage
 
-想定:
+Assumptions:
 
-- running enclave は継続可能
-- fresh restart は不能
+- Running enclaves can continue
+- Fresh restarts are impossible
 
-対応:
+Response:
 
-- active enclave を落とさない
-- snapshot cadence を下げて write-only mode に移るか、必要なら `pause_vault()` する
+- Do not stop the active enclave
+- Reduce snapshot cadence and move to write-only mode, or run `pause_vault()` if needed
 
 ---
 
 ## 12. Security Checklist
 
-- NLB は TCP passthrough にする
-- parent で TLS termination しない
-- enclave は debug 無効
-- EIF signer 証明書 fingerprint を attestation policy に入れる
-- KMS key policy を attestation 条件付きにする
-- success response 前に WAL durable append を必須にする
-- `vault_signer_pubkey` は on-chain で in-place rotation しない
-- provider auth credential を facilitator registration に束縛する
-- snapshot/WAL は常に envelope encryption で保存する
-- Receipt Watchtower に最新 `ParticipantReceipt` を同期する
+- Use TCP passthrough on the NLB
+- Do not terminate TLS on the parent
+- Disable debug on the enclave
+- Include the EIF signer certificate fingerprint in the attestation policy
+- Make the KMS key policy attestation-conditioned
+- Require durable WAL append before success responses
+- Do not rotate `vault_signer_pubkey` in-place on-chain
+- Bind provider auth credentials to facilitator registration
+- Always store snapshot/WAL with envelope encryption
+- Sync the latest `ParticipantReceipt` to Receipt Watchtower
 
 ---
 
 ## 13. Open Items
 
-- warm standby の snapshot 受け渡しを S3 event でやるか EBS snapshot でやるか
-- provider callback egress の domain pinning をどこまで厳しくするか
-- attestation policy hash に AMI hash や parent role hash を入れるか
-- long-lived WebSocket を egress relay でどう health-check するか
+- Whether warm standby snapshot handoff should use S3 events or EBS snapshots
+- How strict provider callback egress domain pinning should be
+- Whether the attestation policy hash should include AMI hash or parent role hash
+- How the egress relay should health-check long-lived WebSockets

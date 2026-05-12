@@ -1,0 +1,3 @@
+[submodule "subly-lp"]
+	path = subly-lp
+	url = https://github.com/SublyFi/subly-lp.git

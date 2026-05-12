@@ -246,7 +246,7 @@ Anchor program implemented and all tests passing.
 - 8 unit tests: pre_sign_and_verify, rejection tests, adapt roundtrip, secret extraction, full protocol flow
 
 ### ASC Manager (enclave/src/asc_manager.rs, 1001 lines)
-- Design doc Algorithm 1 完全実装
+- Full implementation of design doc Algorithm 1
 - Channel lifecycle: open_channel → submit_request → deliver_adaptor → finalize_offchain → close_channel
 - Channel states: Open → Locked → Pending → Closed
 - Fund locking/unlocking, replay protection (used_request_ids)
@@ -262,35 +262,35 @@ Anchor program implemented and all tests passing.
 - `VaultState.active_channels`: DashMap<ChannelId, ChannelState>
 
 ### ASC HTTP Endpoints (enclave/src/handlers.rs)
-- `POST /v1/channel/open` — ASC開設、初期デポジット、署名検証
-- `POST /v1/channel/request` — リクエスト送信、資金ロック、クライアント署名検証
-- `POST /v1/channel/deliver` — プロバイダTEEからアダプタ事前署名受信、pVerify検証
-- `POST /v1/channel/finalize` — アダプタシークレット公開、結果復号、プロバイダクレジット
-- `POST /v1/channel/close` — チャネル閉鎖、オンチェーン決済
+- `POST /v1/channel/open` — ASC opening, initial deposit, signature verification
+- `POST /v1/channel/request` — request submission, fund locking, client signature verification
+- `POST /v1/channel/deliver` — adaptor pre-signature reception from provider TEE, pVerify verification
+- `POST /v1/channel/finalize` — adaptor secret disclosure, result decryption, provider credit
+- `POST /v1/channel/close` — channel closure, on-chain settlement
 
 ### Provider TEE
-- Provider側ライブラリは middleware/src/asc.ts に本番用コードとして実装済み
-  - `generateAscDeliveryArtifact()`: アダプタ鍵生成、事前署名、結果暗号化
-  - `submitAscDelivery()`: Facilitatorの /v1/channel/deliver へPOST
-  - `deliverAscResult()`: 上記を一括実行するワンショット関数
-- Facilitator側 (enclave) の pVerify 検証も完全実装
-- 本番デプロイでは別Nitro Enclaveインスタンス上で稼働（コードは同一、インスタンスが分離）
+- Provider-side library implemented as production code in middleware/src/asc.ts
+  - `generateAscDeliveryArtifact()`: adaptor key generation, pre-signature, result encryption
+  - `submitAscDelivery()`: POST to facilitator /v1/channel/deliver
+  - `deliverAscResult()`: one-shot function that executes the above in one call
+- Facilitator-side (enclave) pVerify verification is fully implemented
+- Production deployment runs on a separate Nitro Enclave instance (same code, isolated instance)
 
 ### Batch Settlement Integration (enclave/src/batch.rs, 659 lines)
-- ASC決済をオンチェーンtxに集約
-- 時間ウィンドウ(120秒)、決済数上限(MAX 20)、強制発火
-- settle_vault + record_audit のアトミックペアリング
+- Aggregates ASC settlements into on-chain txs
+- Time window (120 seconds), settlement count cap (MAX 20), forced trigger
+- Atomic pairing of settle_vault + record_audit
 
 ### Tests
-- `tests/asc_provider_helper.ts` (52 lines): ASCデリバリーアーティファクト生成、アダプタ署名検証
-- Enclave unit tests: adaptor_sig 8テスト
+- `tests/asc_provider_helper.ts` (52 lines): ASC delivery artifact generation, adaptor signature verification
+- Enclave unit tests: 8 adaptor_sig tests
 
 ## Phase 4: Force Settlement + Dispute Resolution + Receipt Watchtower (2026-04-12) ✅
 
 ### On-chain Force Settle Instructions
-- `force_settle_init.rs` (123 lines): ForceSettleRequest PDA作成、Ed25519署名検証、レシートフィールド検証
-- `force_settle_challenge.rs` (112 lines): より新しいレシート(高いnonce)でのチャレンジ、紛争ウィンドウ制約
-- `force_settle_finalize.rs` (113 lines): 紛争ウィンドウ後の支払い実行、free_balance + locked_balance(期限切れ時)
+- `force_settle_init.rs` (123 lines): ForceSettleRequest PDA creation, Ed25519 signature verification, receipt field verification
+- `force_settle_challenge.rs` (112 lines): challenge with a newer receipt (higher nonce), dispute window constraints
+- `force_settle_finalize.rs` (113 lines): payout execution after the dispute window, free_balance + locked_balance when expired
 
 ### ForceSettleRequest State (programs/.../force_settle_request.rs, 36 lines)
 - Fields: bump, vault, participant, participant_kind, recipient_ata, free/locked balances, max_lock_expires_at, receipt_nonce, receipt_signature, initiated_at, dispute_deadline, is_resolved
@@ -299,61 +299,61 @@ Anchor program implemented and all tests passing.
 - DISPUTE_WINDOW_SEC = 604800 (7 days)
 
 ### Ed25519 Signature Utilities (programs/.../ed25519_utils.rs, 191 lines)
-- `verify_ed25519_signature_details()`: sysvar::instructionsからの署名抽出
-- `decode_participant_receipt_message()`: 145バイトレシートメッセージパース
+- `verify_ed25519_signature_details()`: signature extraction from sysvar::instructions
+- `decode_participant_receipt_message()`: 145-byte receipt message parsing
 - `ParticipantReceiptMessage` struct
 
 ### Receipt Watchtower (watchtower/src/, 851 lines)
-- **main.rs** (199 lines): Axum HTTPサーバ (port 3200)、`POST /v1/receipt/store`、`GET /v1/status`、バックグラウンドチャレンジャーループ
-- **receipt_store.rs** (224 lines): DashMap + JSONファイル永続化、nonce単調増加チェック、スレッドセーフ
-- **challenger.rs** (428 lines): ForceSettleRequest PDAポーリング(10秒間隔)、古いレシート検出→force_settle_challengeトランザクション送信、Ed25519プリコンパイル命令構築
+- **main.rs** (199 lines): Axum HTTP server (port 3200), `POST /v1/receipt/store`, `GET /v1/status`, background challenger loop
+- **receipt_store.rs** (224 lines): DashMap + JSON file persistence, monotonic nonce checks, thread-safe
+- **challenger.rs** (428 lines): ForceSettleRequest PDA polling (10-second interval), stale receipt detection -> force_settle_challenge transaction submission, Ed25519 precompile instruction construction
 
 ### Watchtower Integration (enclave/src/handlers.rs)
-- `replicate_receipt_to_watchtower()`: 全ParticipantReceiptをWatchtowerにHTTP POST
-- サーキットブレーカーパターン（エラー時もログ出力して継続）
-- ノンブロッキング非同期
+- `replicate_receipt_to_watchtower()`: HTTP POST all ParticipantReceipts to Watchtower
+- Circuit breaker pattern; logs errors and continues
+- Non-blocking async
 
 ### Tests (tests/a402_vault.ts)
-- 48テストケース、13 describeブロック
-- force_settle_init: 正常パス、改ざん検出、不正署名拒否
-- force_settle_challenge: 古いレシートチャレンジ、署名検証、紛争ウィンドウ
-- force_settle_finalize: 紛争ウィンドウアクティブ拒否（時間経過テストはBankrun time warp必要）
-- Watchtower: receipt_store、challenger ユニットテスト
+- 48 test cases, 13 describe blocks
+- force_settle_init: success path, tamper detection, invalid signature rejection
+- force_settle_challenge: stale receipt challenge, signature verification, dispute window
+- force_settle_finalize: rejects while dispute window is active; elapsed-time tests require Bankrun time warp
+- Watchtower: receipt_store and challenger unit tests
 
 ### Implementation Notes
-- Watchtower永続化は現在JSON形式。本番ではRocksDB等への移行推奨
-- force_settle_finalize の時間経過テストはBankrunのtime warp機能が必要で制限あり
+- Watchtower persistence is currently JSON. Migration to RocksDB or similar is recommended for production
+- force_settle_finalize elapsed-time tests are limited because they require Bankrun time warp
 
-## Phase 1-4 仕様準拠レビュー + Critical修正 (2026-04-12) ✅
+## Phase 1-4 Spec Compliance Review + Critical Fixes (2026-04-12) ✅
 
-### レビュー方法
-- docs/a402-solana-design.md (§1-10) と docs/a402-svm-v1-protocol.md (§1-12) の全仕様を実装と突き合わせ
-- オンチェーンプログラム、Enclave facilitator、Client SDK、Provider middleware、Watchtower、Parent instanceを網羅的に確認
+### Review Method
+- Compared all specs in docs/a402-solana-design.md (§1-10) and docs/a402-svm-v1-protocol.md (§1-12) against the implementation
+- Comprehensively checked the on-chain program, Enclave facilitator, Client SDK, Provider middleware, Watchtower, and Parent instance
 
-### 修正済み Critical 9件
+### Fixed 9 Critical Items
 
 **Middleware (C1-C4):**
-- C1: PAYMENT-RESPONSE ヘッダ追加 (§8.6) — scheme, paymentId, verificationId, settlementId, batchId, txSignature, participantReceipt
-- C2: settle順序修正 — レスポンス返却前にsettle完了を待機 (§8.3 WAL durability)
-- C3: Single-Execution Rule実装 (§8.4) — verificationId単位のin-memory execution cacheで重複実行防止
-- C4: /verify呼び出しにpaymentDetailsオブジェクト追加 (§8.2)
+- C1: Added PAYMENT-RESPONSE header (§8.6) — scheme, paymentId, verificationId, settlementId, batchId, txSignature, participantReceipt
+- C2: Fixed settle ordering — wait for settle completion before returning the response (§8.3 WAL durability)
+- C3: Implemented Single-Execution Rule (§8.4) — prevent duplicate execution with an in-memory execution cache keyed by verificationId
+- C4: Added paymentDetails object to /verify calls (§8.2)
 
 **Enclave Facilitator (C5-C9):**
-- C5: /verify, /settle, /cancelにAuthorization: Bearer認証追加 (§8.2 要件1)
-- C6: payTo/assetMint/networkのprovider登録情報照合 (§8.2 要件7)
-- C7: paymentDetailsHashのcanonical JSON再計算検証 (§8.2 要件3)
-- C8: /cancelにprovider_mismatchチェック追加 — reservation発行先providerのみキャンセル可 (§8.5)
-- C9: request originのallowedOrigins照合 (§4)
+- C5: Added Authorization: Bearer auth to /verify, /settle, /cancel (§8.2 requirement 1)
+- C6: Match payTo/assetMint/network against provider registration information (§8.2 requirement 7)
+- C7: Validate paymentDetailsHash by recomputing canonical JSON (§8.2 requirement 3)
+- C8: Added provider_mismatch check to /cancel — only the provider that received the reservation can cancel it (§8.5)
+- C9: Match request origin against allowedOrigins (§4)
 
-### 残存 Medium 3件 (未修正、本番デプロイ前に対応)
-- M1: SDK verifyAttestation()のPCR検証がstub (§5.3) — 本番Nitro環境で実装
-- M2: Enclave側のVault Statusオフチェーン検証なし — Pause時にオフチェーン予約可能
-- M3: DISPUTE_WINDOW_SEC値の確定 — 設計書内に24時間と7日の2つの値が存在
+### Remaining 3 Medium Items (Unfixed, Address Before Production Deploy)
+- M1: SDK verifyAttestation() PCR verification is a stub (§5.3) — implement in production Nitro environment
+- M2: No off-chain Vault Status verification on the Enclave side — off-chain reservations are possible while paused
+- M3: Finalize DISPUTE_WINDOW_SEC — the design doc contains both 24-hour and 7-day values
 
-### 残存 Low 3件
-- L1: Watchtower challenger.rsのForceSettleRequestサイズがハードコード (219)
-- L2: Parent instanceのrelay失敗時にtokio::select!で全体停止
-- L3: Client SDK paymentIdのローカル重複チェックなし
+### Remaining 3 Low Items
+- L1: ForceSettleRequest size is hardcoded in Watchtower challenger.rs (219)
+- L2: Whole Parent instance stops through tokio::select! when relay fails
+- L3: Client SDK has no local duplicate check for paymentId
 
 ## Remaining for Phase 5
 - Arcium MXE Integration (encrypted-ixs/)
@@ -531,25 +531,25 @@ Ship "privacy-first x402 on Solana" as a Devnet MVP. Phase 3 ASC demo integratio
 ### Motivation
 External Codex review caught 4 real issues I missed in my own review pass. All 4 were legitimate bugs or strength gaps for a public launch. Fixed with regression tests.
 
-### #1 (高) Per-settlement age filter (was: provider-level)
+### #1 (High) Per-settlement age filter (was: provider-level)
 - `enclave/src/batch.rs`: extracted `select_provider_batch_entries()` as a pure function that filters an incoming `(settlement_id, timestamp, amount)` list against both `settlement_is_age_eligible()` and `provider_payout_floor_satisfied()`.
 - `prepare_batch` now calls this per-provider after building the timestamped candidate list, so a fresh credit attached to an already-old `ProviderCredit.oldest_credit_at` is correctly deferred until its own age clears the window.
 - Made `MEMORY.md` / `quickstart.md` claim ("every settlement spends at least min_anonymity_window_sec") match reality.
 - Expanded batch unit coverage to 17 tests total, including mixed fresh/old, fresh-only skip, eligible-only payout-floor semantics, liveness ceiling semantics, flush-mode bypass, and config parsing.
 - `cargo test -p a402-enclave` currently passes with 64 tests.
 
-### #2 (中) SDK attestation cache re-validation
+### #2 (Medium) SDK attestation cache re-validation
 - `sdk/src/subly402.ts` `Subly402Client.verifyAttestation()` now calls `cacheEntryStaleReason()` on every cache hit. Evicts + re-fetches when:
   - cached vaultConfig/vaultSigner/attestationPolicyHash no longer matches the new PaymentDetails
   - cached `expiresAt` is within 60s of now (`EXPIRY_SAFETY_MARGIN_MS`) or invalid
 - Regression: `tests/subly402_interface.ts → "re-fetches a cached attestation whose details no longer match"`.
 
-### #3 (中) middleware attestationPromise finally-reset
+### #3 (Medium) middleware attestationPromise finally-reset
 - `middleware/src/subly402.ts` `Subly402FacilitatorClient.getAttestation()` used `??=` so a rejected attestation Promise stayed cached and bricked the seller until restart.
 - Fix: attach `.finally` that clears `this.attestationPromise` when it settles (if still the same reference). Successful fetches fill `this.attestation` which short-circuits future calls; failed fetches allow the next caller to retry cleanly.
 - Regression: `tests/subly402_interface.ts → "retries attestation fetch after a transient facilitator failure"`.
 
-### #4 (低) Body hash for non-string BodyInit
+### #4 (Low) Body hash for non-string BodyInit
 - `sdk/src/crypto.ts`: new `bodyToBytes()` helper handles string / Buffer / Uint8Array / ArrayBuffer / ArrayBufferView and throws a clear error for Blob / FormData / URLSearchParams / ReadableStream.
 - Both `Subly402Client` and `A402Client` now hash via `sha256hex(bodyToBytes(options?.body))` instead of `options?.body?.toString()`.
 - Prevents silent server-side verify mismatch for binary AI-agent payloads (embeddings, audio, images).

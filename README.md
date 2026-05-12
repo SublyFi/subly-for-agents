@@ -1,21 +1,27 @@
+```
+Old VaultConfig: 6i5SyF8Hx2u5MZW2JgWGhdg5CJsAKeF7UaRAd9bERDDL
+Old Vault ATA:   76YBLxs4EBrvbiP9RT6vH66i6qZb9b67hUdoajjqz5u
+
+```
+
 # A402 / Privacy First x402 on Solana
 
-このリポジトリは、Solana Devnet 上で `Privacy First x402` を AWS Nitro Enclaves 前提で公開するための実装です。
+This repository implements `Privacy First x402` for public Solana Devnet deployment with AWS Nitro Enclaves.
 
-一番大事な前提:
+The most important assumptions:
 
-- `TEE は必須`
-- `TLS は enclave 内で終端`
-- `parent instance / NLB / nginx / ALB で平文を見せない`
+- `TEE is required`
+- `TLS terminates inside the enclave`
+- `parent instance / NLB / nginx / ALB must not see plaintext`
 
-この README は次の 2 つを目的にしています。
+This README has two goals.
 
-1. 手元準備は、できるだけコマンドをそのまま実行するだけで進める
-2. AWS 側は、どの画面で何を設定するかまで丁寧に整理する
+1. Make local preparation mostly copy-and-run commands
+2. Spell out what to configure on the AWS side, down to the relevant screens
 
-## 構成概要
+## Architecture Overview
 
-公開構成は次です。
+The public topology is:
 
 ```text
 Internet
@@ -32,18 +38,18 @@ parent EC2
   - encrypted snapshot/WAL storage
 ```
 
-役割:
+Responsibilities:
 
-- `programs/a402_vault`: Devnet に deploy する Solana program
-- `enclave`: Nitro enclave 内で動く facilitator
-- `parent`: parent instance 上の relay / KMS proxy / snapshot store
-- `watchtower`: stale receipt challenge 用常駐プロセス
+- `programs/a402_vault`: Solana program deployed to Devnet
+- `enclave`: facilitator running inside the Nitro enclave
+- `parent`: relay / KMS proxy / snapshot store on the parent instance
+- `watchtower`: long-running process for stale receipt challenges
 
-## x402 互換の導入イメージ
+## x402-Compatible Integration Shape
 
-facilitator をデプロイした後の Buyer / Seller 導入は、通常の x402 quickstart と同じく API key 発行や provider 登録なしで始められます。
+After deploying the facilitator, Buyer / Seller integration can start like a normal x402 quickstart, without issuing API keys or registering providers.
 
-Seller は保護したい route、価格、network、受取 wallet だけを渡します。Solana では middleware が USDC ATA を `payTo` として自動導出します。`providerId` は `network + assetMint + payTo` から自動導出され、最初の有効な支払い検証時に enclave が open seller として自動登録します。
+The Seller only provides the protected route, price, network, and receiving wallet. On Solana, the middleware automatically derives the USDC ATA as `payTo`. `providerId` is derived from `network + assetMint + payTo`, and the enclave automatically registers it as an open seller during the first valid payment verification.
 
 ```ts
 const facilitator = new Subly402FacilitatorClient({
@@ -53,7 +59,7 @@ const facilitator = new Subly402FacilitatorClient({
 
 const resourceServer = new Subly402ResourceServer(facilitator).register(
   "solana:*",
-  new Subly402ExactScheme()
+  new Subly402ExactScheme(),
 );
 
 app.use(
@@ -70,12 +76,12 @@ app.use(
         ],
       },
     },
-    resourceServer
-  )
+    resourceServer,
+  ),
 );
 ```
 
-Buyer も Subly の API key やアカウント登録は不要です。funded signer と、信頼する facilitator の Nitro attestation policy を渡して `fetch` を wrap します。
+Buyers also do not need a Subly API key or account registration. Pass a funded signer and the Nitro attestation policy for the trusted facilitator, then wrap `fetch`.
 
 ```ts
 const client = new Subly402Client({
@@ -95,28 +101,28 @@ const fetchWithPayment = wrapFetchWithPayment(fetch, client);
 const res = await fetchWithPayment("https://api.example.com/weather");
 ```
 
-残高が足りない場合は、Buyer SDK の `autoDeposit` hook で必要額を on-demand deposit してから再署名/retry できます。これにより x402 と同じ「402 を受けて支払って retry」体験を維持しつつ、Seller への支払いは vault batching で相関を隠します。
+If the balance is insufficient, the Buyer SDK's `autoDeposit` hook can deposit the required amount on demand before re-signing and retrying. This preserves the same x402 experience of receiving a 402, paying, and retrying, while vault batching hides correlation with Seller payouts.
 
-## 最短ルート
+## Shortest Path
 
-既存の `api.demo.sublyfi.com` 環境へ今回のようなコード修正を反映する通常更新は、毎回同じ手順で [docs/redeploy-devnet.md](./docs/redeploy-devnet.md) を使います。
-Build EC2 で生成した runtime archive を S3 に置き、Parent EC2 がそこから取得して `/opt/subly402` と `/etc/subly402` を更新する流れです。
+For routine updates like code changes to the existing `api.demo.sublyfi.com` environment, use [docs/redeploy-devnet.md](./docs/redeploy-devnet.md) every time.
+The flow is to place the runtime archive generated on the Build EC2 in S3, then have the Parent EC2 fetch it and update `/opt/subly402` and `/etc/subly402`.
 
-最短で公開 Devnet まで持っていく流れは次です。
+The shortest path to a public Devnet deployment is:
 
-1. AWS で Region / VPC / KMS key を先に決める
-2. ローカルで `.env.devnet.local` を埋める
-3. Solana program を Devnet に deploy
-4. Nitro 用 runtime env を生成
-5. EIF を build して測定値を取得
-6. 測定値から `attestation_policy_hash` を確定し、on-chain vault を initialize
-7. Terraform で parent EC2 / NLB / S3 を作り、同じ KMS key に attestation 条件付き policy を入れる
-8. parent EC2 に binary / env / EIF を配置して起動
-9. `https://<NLB>/v1/attestation` を確認
+1. Decide the AWS Region / VPC / KMS key first
+2. Fill in `.env.devnet.local` locally
+3. Deploy the Solana program to Devnet
+4. Generate the Nitro runtime env
+5. Build the EIF and capture measurements
+6. Finalize `attestation_policy_hash` from the measurements and initialize the on-chain vault
+7. Use Terraform to create parent EC2 / NLB / S3, and apply an attestation-conditioned policy to the same KMS key
+8. Place the binary / env / EIF on the parent EC2 and start it
+9. Check `https://<NLB>/v1/attestation`
 
-## 前提ツール
+## Prerequisite Tools
 
-ローカル作業マシンに必要:
+Required on the local work machine:
 
 - Node.js 18+
 - Yarn 1.x
@@ -128,25 +134,25 @@ Build EC2 で生成した runtime archive を S3 に置き、Parent EC2 がそ�
 - Terraform
 - `nitro-cli`
 
-この repo で確認済みのローカル build:
+Local build versions verified for this repo:
 
 - `anchor-cli 0.32.1`
 - `solana-cli 3.1.12`
 - `rustc 1.89.0`
 - `node v24`
 
-## 1. ローカル準備
+## 1. Local Preparation
 
-### 1-0. 先に KMS key を 1 本だけ用意する
+### 1-0. Prepare one KMS key first
 
-`yarn nitro:prepare` は vault signer seed をすぐ KMS ciphertext に変換します。
-そのため、この時点で `A402_KMS_KEY_ARN` が必要です。
+`yarn nitro:prepare` immediately converts the vault signer seed into KMS ciphertext.
+Therefore, `A402_KMS_KEY_ARN` is required at this point.
 
-まだ KMS key を作っていない場合は、先に [2-4. KMS key を作る](#2-4-kms-key-を作る) を実施してください。
+If you have not created a KMS key yet, complete [2-4. Create the KMS key](#2-4-create-the-kms-key) first.
 
-### 1-1. `.env.devnet.local` を作る
+### 1-1. Create `.env.devnet.local`
 
-トップに `.env.devnet.local` を作り、最低限これを入れます。
+Create `.env.devnet.local` at the repo root and include at least:
 
 ```bash
 export A402_SOLANA_RPC_URL='https://<your-devnet-rpc>'
@@ -163,19 +169,19 @@ export A402_EIF_SIGNING_CERT_PATH="$PWD/infra/nitro/certs/eif-signing-cert.pem"
 export A402_NITRO_SIGNING_PRIVATE_KEY="$PWD/infra/nitro/certs/eif-signing-key.pem"
 ```
 
-必要になったら後で足すもの:
+Add these later if needed:
 
 - `A402_PUBLIC_ENCLAVE_URL`
 - `A402_KMS_PROVISIONER_PRINCIPAL_ARN`
 - `A402_ENCLAVE_TLS_CA_SOURCE`
 
-補足:
+Notes:
 
-- `A402_KMS_KEY_ARN` は Nitro runtime で実際に使う KMS key です
-- 後の Terraform でも同じ key を `existing_runtime_kms_key_arn` として渡します
-- 別の KMS key を作る必要はありません
+- `A402_KMS_KEY_ARN` is the KMS key actually used by the Nitro runtime
+- Pass the same key to Terraform later as `existing_runtime_kms_key_arn`
+- You do not need to create a separate KMS key
 
-### 1-2. Solana CLI の接続先を揃える
+### 1-2. Align the Solana CLI endpoint
 
 ```bash
 source ./.env.devnet.local
@@ -185,7 +191,7 @@ solana config set \
   --keypair "$ANCHOR_WALLET"
 ```
 
-### 1-3. Program を build / deploy
+### 1-3. Build / deploy the program
 
 ```bash
 NO_DNA=1 anchor build
@@ -194,21 +200,21 @@ NO_DNA=1 anchor deploy \
   --provider.wallet "$ANCHOR_WALLET"
 ```
 
-### 1-4. Nitro runtime 用の初期情報を生成
+### 1-4. Generate initial information for the Nitro runtime
 
-このコマンドで次をまとめて行います。
+This command performs the following:
 
-- vault signer seed を生成
-- signer seed を KMS ciphertext に変換
-- watchtower keypair を生成
-- signer / watchtower に Devnet lamports を供給
-- `parent.env`, `watchtower.env`, `enclave.env`, `run-enclave.json` を生成
+- Generates the vault signer seed
+- Converts the signer seed to KMS ciphertext
+- Generates the watchtower keypair
+- Funds the signer / watchtower with Devnet lamports
+- Generates `parent.env`, `watchtower.env`, `enclave.env`, and `run-enclave.json`
 
 ```bash
 yarn nitro:prepare
 ```
 
-生成されるファイル:
+Generated files:
 
 - `infra/nitro/generated/nitro-plan.json`
 - `infra/nitro/generated/parent.env`
@@ -216,52 +222,52 @@ yarn nitro:prepare
 - `infra/nitro/generated/enclave.env`
 - `infra/nitro/generated/run-enclave.json`
 
-### 1-5. Enclave 内で使う TLS 証明書の source path を指定
+### 1-5. Specify source paths for TLS certificates used inside the enclave
 
-Devnet で agent client 中心なら self-signed でも構いません。
-この実装は `/v1/attestation` の `tlsPublicKeySha256` まで client 側で検証できます。
+For Devnet agent-client-focused usage, self-signed certificates are acceptable.
+This implementation allows the client to verify `tlsPublicKeySha256` from `/v1/attestation`.
 
 ```bash
 export A402_ENCLAVE_TLS_CERT_SOURCE="$PWD/infra/nitro/certs/server.crt"
 export A402_ENCLAVE_TLS_KEY_SOURCE="$PWD/infra/nitro/certs/server.key"
 ```
 
-任意で mTLS を使う場合:
+If optionally using mTLS:
 
 ```bash
 export A402_ENCLAVE_TLS_CA_SOURCE="$PWD/infra/nitro/certs/client-ca.crt"
 ```
 
-### 1-6. EIF を build
+### 1-6. Build the EIF
 
 ```bash
 yarn nitro:build-eif
 ```
 
-生成されるファイル:
+Generated files:
 
 - `infra/nitro/generated/a402-enclave.eif`
 - `infra/nitro/generated/eif-measurements.json`
 
-### 1-7. PCR から policy hash を確定し、vault を initialize
+### 1-7. Finalize the policy hash from PCRs and initialize the vault
 
 ```bash
 yarn nitro:provision
 ```
 
-この step で次を行います。
+This step performs the following:
 
-- EIF 実測値から `attestation_policy_hash` を算出
-- parent EC2 用 IAM role ARN から `PCR3` を導出
-- `initialize_vault` を必要なら実行
-- `terraform.attestation.auto.tfvars.json` を生成
-- client 用参照 env を生成
+- Computes `attestation_policy_hash` from the measured EIF values
+- Derives `PCR3` from the IAM role ARN for the parent EC2
+- Runs `initialize_vault` if needed
+- Generates `terraform.attestation.auto.tfvars.json`
+- Generates the client reference env
 
-補足:
+Note:
 
-- `project_name` を Terraform default (`a402-devnet`) から変える場合は、`yarn nitro:prepare` と `yarn nitro:provision` の前に `A402_NITRO_PROJECT_NAME` を同じ値で設定する
+- If you change `project_name` from the Terraform default (`a402-devnet`), set `A402_NITRO_PROJECT_NAME` to the same value before `yarn nitro:prepare` and `yarn nitro:provision`
 
-生成されるファイル:
+Generated files:
 
 - `infra/nitro/generated/attestation-policy.json`
 - `infra/nitro/generated/attestation-policy.hash`
@@ -269,156 +275,155 @@ yarn nitro:provision
 - `infra/nitro/generated/terraform.attestation.auto.tfvars.json`
 - `infra/nitro/generated/client.env`
 
-### 1-8. parent / watchtower の release binary を作る
+### 1-8. Build the parent / watchtower release binaries
 
-EC2 へ持っていく binary は別で build します。
+Build the binaries that will be copied to EC2 separately.
 
 ```bash
 NO_DNA=1 cargo build --release -p a402-parent -p a402-watchtower
 ```
 
-## 2. AWS 側の環境構築
+## 2. AWS Environment Setup
 
-ここはコマンドよりも、設定を間違えないことが大事です。
+Here, avoiding configuration mistakes matters more than the commands themselves.
 
-### 2-1. Region を決める
+### 2-1. Choose a Region
 
-まず 1 つ Region を決めて固定します。
+First choose one Region and keep it fixed.
 
-推奨:
+Recommended:
 
 - `us-east-1`
 
-理由:
+Reasons:
 
-- Nitro / KMS / NLB / EC2 のドキュメント例が多い
-- Devnet RPC を us-east 近辺に置きやすい
+- Nitro / KMS / NLB / EC2 documentation examples are common
+- Devnet RPC endpoints are easy to place near us-east
 
-### 2-2. VPC / subnet を用意する
+### 2-2. Prepare the VPC / subnets
 
-必要な構成:
+Required layout:
 
-- public subnet を 2 つ以上
-- parent EC2 はそのうち 1 つに配置
-- NLB は 2 つ以上の public subnet にまたがる
+- At least two public subnets
+- Place the parent EC2 in one of them
+- Place the NLB across at least two public subnets
 
-考え方:
+Guidance:
 
-- `NLB` は public
-- `watchtower` は public にしない
-- parent EC2 の inbound は `443` と必要なら `22` だけ
+- `NLB` is public
+- `watchtower` is not public
+- Parent EC2 inbound allows only `443` and, if needed, `22`
 
-### 2-3. Security Group を決める
+### 2-3. Define the Security Group
 
-parent EC2 には次の考え方で設定します。
+Configure the parent EC2 with the following approach.
 
-許可:
+Allow:
 
 - `443/tcp` from `0.0.0.0/0`
-- `22/tcp` from 自分の固定 IP だけ
+- `22/tcp` only from your fixed IP
 
-禁止:
+Do not allow:
 
-- `3200/tcp` を public に開けない
-- enclave 用の vsock port を public に出さない
+- Do not expose `3200/tcp` publicly
+- Do not expose the enclave vsock port publicly
 
 egress:
 
-- 一旦 `0.0.0.0/0` でもよい
-- 後で厳密化するなら Solana RPC, AWS KMS/STS, provider domains に絞る
+- `0.0.0.0/0` is acceptable initially
+- If tightening later, restrict it to Solana RPC, AWS KMS/STS, and provider domains
 
-### 2-4. KMS key を作る
+### 2-4. Create the KMS key
 
-KMS key は 1 本で始めて構いません。
+Starting with one KMS key is fine.
 
-用途:
+Uses:
 
-- vault signer seed の復号
-- snapshot data key の生成
+- Decrypting the vault signer seed
+- Generating the snapshot data key
 
-作成時に見るポイント:
+Settings to check when creating it:
 
 - `Symmetric`
 - `Encrypt and decrypt`
-- key rotation を `ON`
+- Turn key rotation `ON`
 
-AWS Console での推奨手順:
+Recommended AWS Console steps:
 
-1. `KMS` を開く
-2. `Customer managed keys` を開く
+1. Open `KMS`
+2. Open `Customer managed keys`
 3. `Create key`
-4. `Symmetric` を選ぶ
-5. `Encrypt and decrypt` を選ぶ
-6. key alias を決める
-   例: `alias/a402-devnet-runtime`
-7. key administrator は自分の admin role を選ぶ
-8. key usage permissions は、まず自分の作業用 principal だけ入れて作成する
-9. 作成後に key ARN をコピーする
-10. その ARN を `.env.devnet.local` の `A402_KMS_KEY_ARN` に入れる
+4. Select `Symmetric`
+5. Select `Encrypt and decrypt`
+6. Choose a key alias
+   Example: `alias/a402-devnet-runtime`
+7. Select your admin role as the key administrator
+8. For key usage permissions, initially add only your working principal and create the key
+9. Copy the key ARN after creation
+10. Put that ARN in `A402_KMS_KEY_ARN` in `.env.devnet.local`
 
-この repo の Terraform は、後でこの同じ KMS key に `attested enclave の PCR` 条件付き policy を適用できます。
+This repo's Terraform can later apply a policy conditioned on the `attested enclave PCRs` to the same KMS key.
 
-### 2-5. EIF signing certificate を用意する
+### 2-5. Prepare the EIF signing certificate
 
-必要なのは `nitro-cli build-enclave` で EIF に署名するための証明書です。
+This certificate is needed to sign the EIF with `nitro-cli build-enclave`.
 
-最低限必要なもの:
+Minimum required files:
 
 - signing certificate
 - private key
 
-この証明書は TLS 証明書とは別物です。
+This certificate is separate from the TLS certificate.
 
-区別:
+Distinction:
 
-- `EIF signing cert`: enclave image の署名用
-- `TLS cert`: client/provider と enclave の HTTPS 用
+- `EIF signing cert`: signs the enclave image
+- `TLS cert`: used for HTTPS between client/provider and enclave
 
-### 2-6. parent EC2 を決める
+### 2-6. Choose the parent EC2
 
-推奨:
+Recommended:
 
-- Nitro Enclaves 対応 instance type
+- Nitro Enclaves-compatible instance type
 - Linux
-- 最低でも `c6a.xlarge` か同等以上
-- ルートボリュームは 30GB 以上
+- At least `c6a.xlarge` or equivalent
+- Root volume of at least 30GB
 
-理由:
+Reason:
 
-- enclave に CPU / memory を分割して渡すので、parent 側にも余裕が必要
+- CPU / memory are split out to the enclave, so the parent also needs headroom
 
-Terraform で入れる値の考え方:
+How to think about Terraform values:
 
-- `vpc_id`: 対象 VPC
-- `nlb_subnet_ids`: public subnet を 2 つ以上
-- `instance_subnet_id`: parent EC2 を置く subnet
+- `vpc_id`: target VPC
+- `nlb_subnet_ids`: at least two public subnets
+- `instance_subnet_id`: subnet where the parent EC2 is placed
 - `ami_id`: Linux AMI
-- `snapshot_bucket_name`: 一意な S3 bucket 名
+- `snapshot_bucket_name`: unique S3 bucket name
 
-### 2-7. NLB を使う
+### 2-7. Use an NLB
 
-ここは重要です。
+This is important.
 
-使うもの:
+Use:
 
 - `NLB`
 - `TCP/443`
 
-使わないもの:
+Do not use:
 
 - `ALB`
-- parent nginx での TLS terminate
-- ACM を parent で terminate する構成
+- TLS termination in parent nginx
+- Any setup that terminates ACM on the parent
 
-理由:
+Reason:
 
-- TLS の平文を parent に見せたくないため
+- The parent must not see TLS plaintext
 
 ### 2-8. Terraform apply
 
-`yarn nitro:provision` 実行後にできる
+Use the file generated after `yarn nitro:provision`:
 `infra/nitro/generated/terraform.attestation.auto.tfvars.json`
-を使います。
 
 ```bash
 cd infra/nitro/terraform
@@ -434,21 +439,21 @@ terraform apply \
   -var='snapshot_bucket_name=a402-devnet-snapshots-xxxxxxxx'
 ```
 
-必要なら追加するもの:
+Add if needed:
 
 - `kms_provisioner_principal_arns`
 
-これは `nitro:prepare` を実行する IAM principal を KMS で `Encrypt` できるようにしたい場合に使います。
+Use this when the IAM principal running `nitro:prepare` needs KMS `Encrypt` permissions.
 
-`existing_runtime_kms_key_arn` を指定すると:
+When `existing_runtime_kms_key_arn` is specified:
 
-- `nitro:prepare` で使った同じ KMS key を Terraform でも使う
-- Terraform は新しい runtime KMS key を作らない
-- その key に対して attestation-aware policy を反映する
+- Terraform uses the same KMS key used by `nitro:prepare`
+- Terraform does not create a new runtime KMS key
+- Terraform applies an attestation-aware policy to that key
 
-## 3. Parent EC2 への配置
+## 3. Deploy to the Parent EC2
 
-Terraform apply 後、parent EC2 に以下を配置します。
+After `terraform apply`, place the following on the parent EC2.
 
 binary:
 
@@ -469,7 +474,7 @@ helper scripts:
 - `infra/nitro/systemd/a402-parent.service`
 - `infra/nitro/systemd/a402-watchtower.service`
 
-推奨配置:
+Recommended layout:
 
 - `/opt/a402/bin/a402-parent`
 - `/opt/a402/bin/a402-watchtower`
@@ -480,42 +485,42 @@ helper scripts:
 - `/etc/a402/watchtower.env`
 - `/etc/a402/run-enclave.json`
 
-補足:
+Notes:
 
-- `enclave.env` は EIF build 時に image の中へ入る
-- parent に `A402_VAULT_SIGNER_SECRET_KEY_B64` を置かない
-- parent が持つのは ciphertext と relay 機能だけ
+- `enclave.env` is embedded into the image during the EIF build
+- Do not put `A402_VAULT_SIGNER_SECRET_KEY_B64` on the parent
+- The parent only holds ciphertext and relay functionality
 
-## 4. Parent EC2 上で必要なソフト
+## 4. Software Required on the Parent EC2
 
-parent EC2 に必要:
+Required on the parent EC2:
 
 - `nitro-cli`
 - `a402-parent`
 - `a402-watchtower`
 
-必要に応じて:
+As needed:
 
 - `jq`
 - `curl`
 - `systemd`
 
-補足:
+Notes:
 
-- Docker は `EIF を build するマシン` に必要です
-- `EIF を run するだけの parent EC2` には通常不要です
+- Docker is required on the `machine that builds the EIF`
+- It is usually unnecessary on a `parent EC2 that only runs the EIF`
 
-## 5. 起動順序
+## 5. Startup Order
 
-起動順はこの順番です。
+Start components in this order.
 
 1. watchtower
 2. parent
 3. enclave
 
-### 5-1. 推奨: systemd で起動
+### 5-1. Recommended: start with systemd
 
-systemd unit はすでに repo に入っています。
+systemd units are already in the repo.
 
 ```bash
 sudo cp infra/nitro/systemd/a402-parent.service /etc/systemd/system/
@@ -525,9 +530,9 @@ sudo systemctl enable --now a402-watchtower
 sudo systemctl enable --now a402-parent
 ```
 
-### 5-2. 直接起動する場合
+### 5-2. Starting directly
 
-raw binary を直接叩くのではなく、env を読む wrapper を使います。
+Use wrappers that read env files instead of invoking the raw binaries directly.
 
 ```bash
 bash /opt/a402/bin/start-watchtower.sh /etc/a402/watchtower.env
@@ -537,28 +542,28 @@ bash /opt/a402/bin/start-watchtower.sh /etc/a402/watchtower.env
 bash /opt/a402/bin/start-parent.sh /etc/a402/parent.env
 ```
 
-### 5-3. enclave 起動
+### 5-3. Start the enclave
 
 ```bash
 NO_DNA=1 nitro-cli run-enclave --config /etc/a402/run-enclave.json
 ```
 
-repo 配下からなら:
+From the repo:
 
 ```bash
 yarn nitro:run /etc/a402/run-enclave.json
 ```
 
-状態確認:
+Check status:
 
 ```bash
 yarn nitro:describe
 curl -sk https://<your-nlb-dns>/v1/attestation | jq .
 ```
 
-## 6. 初回公開 smoke
+## 6. Initial Public Smoke Test
 
-初回だけ管理 API を使いたい場合は、EIF build 前の `enclave.env` に次を入れます。
+If you want to use the admin APIs only for the initial run, put the following in `enclave.env` before building the EIF.
 
 ```bash
 export SUBLY402_ENABLE_PROVIDER_REGISTRATION_API='1'
@@ -566,19 +571,18 @@ export SUBLY402_ENABLE_ADMIN_API='1'
 export SUBLY402_ADMIN_AUTH_TOKEN='<operator-only-random-token>'
 ```
 
-その状態で:
+With that state:
 
 1. `yarn nitro:build-eif`
 2. `yarn nitro:provision`
-3. parent へ再配置
-4. enclave 再起動
+3. Redeploy to the parent
+4. Restart the enclave
 
-smoke が終わったら、両方 `0` に戻して EIF を作り直してください。
-`prepare` は enclave 側には `SUBLY402_ADMIN_AUTH_TOKEN_SHA256` だけを書き出します。
-単一 provider の smoke で即時 batch が必要な時だけ
-`SUBLY402_ALLOW_ADMIN_PRIVACY_BYPASS_BATCH=1` を使い、公開 runtime では `0` のままにします。
+After the smoke test, set both back to `0` and rebuild the EIF.
+`prepare` writes only `SUBLY402_ADMIN_AUTH_TOKEN_SHA256` to the enclave side.
+Use `SUBLY402_ALLOW_ADMIN_PRIVACY_BYPASS_BATCH=1` only when a single-provider smoke test requires immediate batching, and keep it at `0` in the public runtime.
 
-## 7. 日常的に使うコマンド
+## 7. Daily Commands
 
 ```bash
 source ./.env.devnet.local
@@ -614,72 +618,72 @@ yarn nitro:describe
 yarn nitro:terminate
 ```
 
-## 8. 生成ファイルの意味
+## 8. Meaning of Generated Files
 
 `infra/nitro/generated/nitro-plan.json`
 
-- Nitro 用の plan
-- vault / signer / watchtower / KMS まわりの中間情報
+- Nitro plan
+- Intermediate information around vault / signer / watchtower / KMS
 
 `infra/nitro/generated/enclave.env`
 
-- EIF build 時に enclave image へ入る runtime env
+- Runtime env embedded into the enclave image during the EIF build
 
 `infra/nitro/generated/run-enclave.json`
 
-- `nitro-cli run-enclave --config ...` に渡す設定
+- Configuration passed to `nitro-cli run-enclave --config ...`
 
 `infra/nitro/generated/eif-measurements.json`
 
-- EIF の PCR 実測値
+- Measured PCR values for the EIF
 
 `infra/nitro/generated/terraform.attestation.auto.tfvars.json`
 
-- Terraform に渡す attestation 条件値
+- Attestation condition values passed to Terraform
 
 `infra/nitro/generated/client.env`
 
-- client 側で参照する公開情報
+- Public information referenced by clients
 
-## 9. よくある詰まりどころ
+## 9. Common Failure Points
 
-### `nitro:prepare` が KMS で失敗する
+### `nitro:prepare` fails with KMS
 
-確認:
+Check:
 
 - `AWS_REGION`
 - `A402_KMS_KEY_ARN`
-- 実行 IAM principal に `kms:Encrypt` があるか
+- Whether the executing IAM principal has `kms:Encrypt`
 
-### `nitro:build-eif` が失敗する
+### `nitro:build-eif` fails
 
-確認:
+Check:
 
 - `A402_ENCLAVE_TLS_CERT_SOURCE`
 - `A402_ENCLAVE_TLS_KEY_SOURCE`
 - `A402_EIF_SIGNING_CERT_PATH`
 - `A402_NITRO_SIGNING_PRIVATE_KEY`
 
-### `nitro:provision` が失敗する
+### `nitro:provision` fails
 
-確認:
+Check:
 
-- `anchor deploy` 済みか
-- `infra/nitro/generated/eif-measurements.json` があるか
-- `ANCHOR_WALLET` が funded か
+- Whether `anchor deploy` has completed
+- Whether `infra/nitro/generated/eif-measurements.json` exists
+- Whether `ANCHOR_WALLET` is funded
 
-### `curl https://<nlb>/v1/attestation` が失敗する
+### `curl https://<nlb>/v1/attestation` fails
 
-確認:
+Check:
 
-- NLB が `TCP/443` か
-- parent の `443` が開いているか
-- parent / watchtower / enclave の起動順が正しいか
-- `A402_WATCHTOWER_URL` が `127.0.0.1:3200` を向いているか
+- Whether the NLB is `TCP/443`
+- Whether parent `443` is open
+- Whether parent / watchtower / enclave were started in the correct order
+- Whether `A402_WATCHTOWER_URL` points to `127.0.0.1:3200`
 
-## 10. 参照ドキュメント
+## 10. Reference Documents
 
-- 既存 Devnet の反復デプロイ手順: [docs/redeploy-devnet.md](./docs/redeploy-devnet.md)
-- 詳細な Nitro 手順: [docs/nitro-devnet-deploy.md](./docs/nitro-devnet-deploy.md)
-- Nitro 雛形: [infra/nitro/README.md](./infra/nitro/README.md)
-- ローカル Devnet 手順: [docs/devnet-setup.md](./docs/devnet-setup.md)
+- Existing Devnet repeat deployment runbook: [docs/redeploy-devnet.md](./docs/redeploy-devnet.md)
+- Detailed Nitro procedure: [docs/nitro-devnet-deploy.md](./docs/nitro-devnet-deploy.md)
+- Nitro template: [infra/nitro/README.md](./infra/nitro/README.md)
+- Local Devnet procedure: [docs/devnet-setup.md](./docs/devnet-setup.md)

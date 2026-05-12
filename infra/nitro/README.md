@@ -1,48 +1,48 @@
 # Nitro Rollout
 
-このディレクトリは、A402 を AWS Nitro Enclaves 上で公開 Devnet 配備するための雛形です。
+This directory is the template for deploying A402 to a public Devnet environment on AWS Nitro Enclaves.
 
-最短手順は [`docs/nitro-devnet-deploy.md`](../../docs/nitro-devnet-deploy.md) を参照してください。
+For the shortest path, see [`docs/nitro-devnet-deploy.md`](../../docs/nitro-devnet-deploy.md).
 
-入っているもの:
+Included components:
 
-- `terraform/`: parent EC2 / NLB / IAM / KMS / snapshot bucket の骨格
-- `env/`: `parent` と `watchtower` の env テンプレート
-- `systemd/`: parent / watchtower 常駐化ユニット
-- `enclave/`: EIF build 用 Dockerfile と entrypoint
+- `terraform/`: skeleton for parent EC2 / NLB / IAM / KMS / snapshot bucket
+- `env/`: env templates for `parent` and `watchtower`
+- `systemd/`: long-running parent / watchtower units
+- `enclave/`: Dockerfile and entrypoint for EIF builds
 
-追加した automation:
+Added automation:
 
-- `yarn nitro:prepare`: vault signer ciphertext と runtime env を生成
-- `yarn nitro:build-eif`: EIF build と measurements 出力
-- `yarn nitro:provision`: PCR から policy hash を確定して on-chain initialize
+- `yarn nitro:prepare`: generates the vault signer ciphertext and runtime env
+- `yarn nitro:build-eif`: builds the EIF and outputs measurements
+- `yarn nitro:provision`: materializes the policy hash from PCRs and runs on-chain initialization
 
-前提:
+Prerequisites:
 
-- Solana program はすでに Devnet に deploy 済み
-- `a402-parent`, `a402-watchtower`, `a402-enclave` を build できる
-- enclave 用 EIF は別途 build する
-- AWS 側の VPC / subnet / AMI は自分の環境に合わせて入れる
+- The Solana program is already deployed to Devnet
+- `a402-parent`, `a402-watchtower`, and `a402-enclave` can be built
+- The enclave EIF is built separately
+- AWS-side VPC / subnet / AMI values are filled in for your environment
 
-手順:
+Procedure:
 
-1. `infra/nitro/terraform` に `terraform.tfvars` を作る
-2. `terraform init && terraform apply` で EC2 / NLB / KMS / S3 を作る
-3. 生成された parent EC2 に `a402-parent`, `a402-watchtower`, EIF を配置する
-4. `env/*.example` を `/etc/a402/*.env` にコピーして値を埋める
-5. `systemd/*.service` を `/etc/systemd/system/` に配置して `systemctl enable --now` する
-6. EIF を Nitro で起動し、`A402_PARENT_INTERCONNECT_MODE=vsock` / `A402_ENCLAVE_INTERCONNECT_MODE=vsock` で接続する
+1. Create `terraform.tfvars` in `infra/nitro/terraform`
+2. Run `terraform init && terraform apply` to create EC2 / NLB / KMS / S3
+3. Place `a402-parent`, `a402-watchtower`, and the EIF on the generated parent EC2
+4. Copy `env/*.example` to `/etc/a402/*.env` and fill in the values
+5. Place `systemd/*.service` in `/etc/systemd/system/` and run `systemctl enable --now`
+6. Start the EIF with Nitro and connect with `A402_PARENT_INTERCONNECT_MODE=vsock` / `A402_ENCLAVE_INTERCONNECT_MODE=vsock`
 
-重要:
+Important:
 
-- この turn で `ingress`, `KMS`, `snapshot_store` は `tcp(dev)` / `vsock(prod)` 両対応にした
-- enclave の outbound HTTP / HTTPS / Solana RPC は `parent egress_relay` 経由で出る
-- bootstrap 用の Nitro attestation document は enclave 内で NSM から生成し、KMS decrypt / data key 取得に使う
-- `deposit_detector` は `logsSubscribe(finalized)` で vault token account を監視し、切断時は catch-up する
-- 本番では `A402_EGRESS_ALLOWLIST` を設定して parent relay の接続先を絞る
+- In this turn, `ingress`, `KMS`, and `snapshot_store` were made compatible with both `tcp(dev)` and `vsock(prod)`
+- Enclave outbound HTTP / HTTPS / Solana RPC traffic exits through `parent egress_relay`
+- The Nitro attestation document for bootstrap is generated from NSM inside the enclave and used for KMS decrypt / data key retrieval
+- `deposit_detector` monitors the vault token account with `logsSubscribe(finalized)` and catches up after disconnects
+- In production, set `A402_EGRESS_ALLOWLIST` to restrict the parent relay destinations
 
-公開 URL を生かすまでの残タスク:
+Remaining tasks before the public URL is live:
 
-1. `A402_EGRESS_ALLOWLIST` と AWS 側 egress 制御を本番値で固定する
-2. EIF build と PCR 計測を CI か build script に乗せる
-3. KMS key policy を実 PCR に束縛する
+1. Pin `A402_EGRESS_ALLOWLIST` and AWS-side egress controls to production values
+2. Move EIF build and PCR measurement into CI or a build script
+3. Bind the KMS key policy to the actual PCRs

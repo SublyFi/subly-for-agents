@@ -8,6 +8,7 @@ test-ledger
 .env.local
 .env.*.local
 .env.devnet.generated
+.env*
 data/devnet-state.json
 data/*.pid
 data/logs
