@@ -1,8 +1,8 @@
 # Devnet Redeploy Runbook
 
-この手順は、既存の `api.demo.sublyfi.com` 環境へ新しい Subly402 runtime を反映するための反復デプロイ手順です。
+This is the repeatable deployment procedure for rolling a new Subly402 runtime into the existing `api.demo.sublyfi.com` environment.
 
-初回構築ではなく、通常のコード更新後はこの手順を使います。
+Use this for routine code updates, not for first-time provisioning.
 
 ## Current Infrastructure
 

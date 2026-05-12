@@ -1,39 +1,39 @@
 # Nitro Devnet Deployment
 
-この手順は、`Privacy First x402` を AWS Nitro Enclaves 前提で Devnet 公開するための最短導線です。
+This guide is the shortest path for publishing `Privacy First x402` to Devnet with AWS Nitro Enclaves.
 
-既存の `api.demo.sublyfi.com` 環境へ修正を反映する通常更新は、[Devnet Redeploy Runbook](./redeploy-devnet.md) を使います。
-Build EC2 で artifact を作り、S3 経由で Parent EC2 に配置する手順を固定しています。
+For routine updates to the existing `api.demo.sublyfi.com` environment, use the [Devnet Redeploy Runbook](./redeploy-devnet.md).
+That runbook fixes the flow for building artifacts on the Build EC2 and deploying them to the Parent EC2 through S3.
 
-前提:
+Prerequisites:
 
-- Solana program を Devnet に deploy できる
-- AWS CLI / Terraform / Docker / Nitro CLI が使える
-- Devnet RPC URL と funded deploy wallet がある
-- EIF signing certificate を用意済み
-- parent EC2 は Nitro Enclaves 対応インスタンスを使う
+- You can deploy the Solana program to Devnet
+- AWS CLI / Terraform / Docker / Nitro CLI are available
+- You have a Devnet RPC URL and a funded deploy wallet
+- The EIF signing certificate is already prepared
+- The parent EC2 uses a Nitro Enclaves-compatible instance
 
-生成物は `infra/nitro/generated/` にまとまります。
+Generated artifacts are collected under `infra/nitro/generated/`.
 
-## 0. 先に KMS key を作る
+## 0. Create the KMS key first
 
-`yarn nitro:prepare` は vault signer seed を KMS ciphertext に変換するので、最初に KMS key ARN が必要です。
+`yarn nitro:prepare` converts the vault signer seed into KMS ciphertext, so you need the KMS key ARN first.
 
-AWS Console で:
+In the AWS Console:
 
 1. `KMS`
 2. `Customer managed keys`
 3. `Create key`
 4. `Symmetric`
 5. `Encrypt and decrypt`
-6. alias を設定
-7. key ARN をコピー
+6. Set the alias
+7. Copy the key ARN
 
-その ARN を `.env.devnet.local` の `A402_KMS_KEY_ARN` に入れます。
+Put that ARN in `A402_KMS_KEY_ARN` in `.env.devnet.local`.
 
 ## 0. Local env
 
-`.env.devnet.local` に最低限これを入れる:
+Put at least the following in `.env.devnet.local`:
 
 ```bash
 export A402_SOLANA_RPC_URL='https://<your-devnet-rpc>'
@@ -49,7 +49,7 @@ export A402_NITRO_SIGNING_PRIVATE_KEY="$PWD/infra/nitro/certs/eif-signing-key.pe
 export AWS_REGION='us-east-1'
 ```
 
-TLS 証明書は EIF build 前に source path を指定する:
+Specify the TLS certificate source paths before building the EIF:
 
 ```bash
 export A402_ENCLAVE_TLS_CERT_SOURCE="$PWD/infra/nitro/certs/server.crt"
@@ -68,18 +68,18 @@ NO_DNA=1 anchor deploy \
 
 ## 2. Nitro prepare
 
-この step で:
+This step:
 
-- planned `vaultConfig` / `vaultTokenAccount` を確定
-- vault signer seed を生成して KMS ciphertext 化
-- watchtower keypair を生成して funding
-- `parent.env`, `watchtower.env`, `enclave.env`, `run-enclave.json` を生成
+- Finalizes the planned `vaultConfig` / `vaultTokenAccount`
+- Generates the vault signer seed and converts it to KMS ciphertext
+- Generates and funds the watchtower keypair
+- Generates `parent.env`, `watchtower.env`, `enclave.env`, and `run-enclave.json`
 
 ```bash
 yarn nitro:prepare
 ```
 
-出力:
+Outputs:
 
 - `infra/nitro/generated/nitro-plan.json`
 - `infra/nitro/generated/parent.env`
@@ -93,29 +93,29 @@ yarn nitro:prepare
 yarn nitro:build-eif
 ```
 
-出力:
+Outputs:
 
 - `infra/nitro/generated/a402-enclave.eif`
 - `infra/nitro/generated/eif-measurements.json`
 
-重要:
+Important:
 
-- Nitro では `attestation_policy_hash` を EIF の中に固定しない
-- enclave runtime は実測 PCR と `A402_KMS_KEY_ARN_SHA256` / `A402_EIF_SIGNING_CERT_SHA256` から hash を導出する
-- そのため EIF build 後に policy hash を確定しても循環依存にならない
+- Nitro does not bake `attestation_policy_hash` into the EIF
+- The enclave runtime derives the hash from measured PCRs and `A402_KMS_KEY_ARN_SHA256` / `A402_EIF_SIGNING_CERT_SHA256`
+- Because of this, finalizing the policy hash after the EIF build does not create a circular dependency
 
 ## 4. On-chain initialize + policy materialize
 
-EIF の実測値から policy hash を作り、`initialize_vault` に固定する。
+Build the policy hash from the measured EIF values and pin it in `initialize_vault`.
 
-この step では parent EC2 用 IAM role ARN から `PCR3` も導出する。
-Terraform の `project_name` を default (`a402-devnet`) から変える場合は、`A402_NITRO_PROJECT_NAME` を同じ値で設定してから実行する。
+This step also derives `PCR3` from the IAM role ARN for the parent EC2.
+If you change Terraform's `project_name` from the default (`a402-devnet`), set `A402_NITRO_PROJECT_NAME` to the same value before running it.
 
 ```bash
 yarn nitro:provision
 ```
 
-出力:
+Outputs:
 
 - `infra/nitro/generated/attestation-policy.json`
 - `infra/nitro/generated/attestation-policy.hash`
@@ -123,7 +123,7 @@ yarn nitro:provision
 - `infra/nitro/generated/nitro-state.json`
 - `infra/nitro/generated/client.env`
 
-## 4.5. parent / watchtower release binary も build する
+## 4.5. Build the parent / watchtower release binaries too
 
 ```bash
 NO_DNA=1 cargo build --release -p a402-parent -p a402-watchtower
@@ -131,9 +131,9 @@ NO_DNA=1 cargo build --release -p a402-parent -p a402-watchtower
 
 ## 5. Terraform apply
 
-`infra/nitro/generated/terraform.attestation.auto.tfvars.json` を `infra/nitro/terraform/` にコピーするか、`-var-file` で渡す。
+Copy `infra/nitro/generated/terraform.attestation.auto.tfvars.json` into `infra/nitro/terraform/`, or pass it with `-var-file`.
 
-例:
+Example:
 
 ```bash
 cd infra/nitro/terraform
@@ -149,17 +149,17 @@ terraform apply \
   -var='snapshot_bucket_name=a402-devnet-snapshots-xxxx'
 ```
 
-`kms_provisioner_principal_arns` も必要ならこの tfvars に追加する。
+Add `kms_provisioner_principal_arns` to this tfvars file if needed.
 
-重要:
+Important:
 
-- `existing_runtime_kms_key_arn` には `nitro:prepare` で使った同じ KMS key を渡す
-- Terraform はその key に attestation-aware policy を適用する
-- ここで別の KMS key を作らない
+- Pass the same KMS key used by `nitro:prepare` to `existing_runtime_kms_key_arn`
+- Terraform applies the attestation-aware policy to that key
+- Do not create a separate KMS key here
 
 ## 6. Parent instance setup
 
-EC2 に以下を配置する:
+Place the following on the EC2:
 
 - `target/release/a402-parent`
 - `target/release/a402-watchtower`
@@ -172,7 +172,7 @@ EC2 に以下を配置する:
 - `infra/nitro/systemd/a402-parent.service`
 - `infra/nitro/systemd/a402-watchtower.service`
 
-推奨配置:
+Recommended layout:
 
 - `/opt/a402/bin/a402-parent`
 - `/opt/a402/bin/a402-watchtower`
@@ -186,7 +186,7 @@ EC2 に以下を配置する:
 
 ## 7. Start runtime
 
-推奨は systemd:
+systemd is recommended:
 
 ```bash
 sudo cp infra/nitro/systemd/a402-parent.service /etc/systemd/system/
@@ -196,7 +196,7 @@ sudo systemctl enable --now a402-watchtower
 sudo systemctl enable --now a402-parent
 ```
 
-直接起動する場合は env を読む wrapper を使う。
+If starting directly, use wrappers that read env files.
 
 watchtower:
 
@@ -216,13 +216,13 @@ enclave:
 NO_DNA=1 nitro-cli run-enclave --config /etc/a402/run-enclave.json
 ```
 
-repo から直接なら:
+From the repo directly:
 
 ```bash
 yarn nitro:run /etc/a402/run-enclave.json
 ```
 
-状態確認:
+Check status:
 
 ```bash
 yarn nitro:describe
@@ -231,20 +231,20 @@ curl -sk https://<nlb-dns>/v1/attestation | jq .
 
 ## 8. Public smoke
 
-初回だけ:
+Only for the initial run:
 
 - `SUBLY402_ENABLE_PROVIDER_REGISTRATION_API=1`
 - `SUBLY402_ENABLE_ADMIN_API=1`
 - `SUBLY402_ADMIN_AUTH_TOKEN=<operator-only-random-token>`
 
-で EIF を作り直し、公開 smoke を通したら両方 `0` に戻して EIF を再 build する。
-`prepare` は enclave env へ raw token ではなく `SUBLY402_ADMIN_AUTH_TOKEN_SHA256` を出力する。
-単一 provider の demo で即時 batch が必要な時だけ
-`SUBLY402_ALLOW_ADMIN_PRIVACY_BYPASS_BATCH=1` を使う。公開 runtime では `0` のままにする。
+Rebuild the EIF with those values, run the public smoke test, then set both back to `0` and rebuild the EIF again.
+`prepare` outputs `SUBLY402_ADMIN_AUTH_TOKEN_SHA256` to the enclave env instead of the raw token.
+Use `SUBLY402_ALLOW_ADMIN_PRIVACY_BYPASS_BATCH=1` only when a single-provider demo needs immediate batching.
+Keep it at `0` in the public runtime.
 
 ## Notes
 
-- `watchtower` は public に出さない
-- `ALB` や parent nginx で TLS terminate しない
-- `A402_VAULT_SIGNER_SECRET_KEY_B64` を parent に置かない
-- Nitro runtime では `A402_ATTESTATION_POLICY_HASH_HEX` を image に焼かず、runtime 測定値から導出する
+- Do not expose `watchtower` publicly
+- Do not terminate TLS with `ALB` or parent nginx
+- Do not place `A402_VAULT_SIGNER_SECRET_KEY_B64` on the parent
+- In the Nitro runtime, do not bake `A402_ATTESTATION_POLICY_HASH_HEX` into the image; derive it from runtime measurements
