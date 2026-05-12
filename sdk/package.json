@@ -4,14 +4,14 @@
   "description": "Privacy-first x402 client SDK for Solana. Pay paid APIs through a TEE-based vault so on-chain observers never see the buyer-to-provider edge.",
   "license": "ISC",
   "author": "SublyFi",
-  "homepage": "https://github.com/SublyFi/privacy-x402#readme",
+  "homepage": "https://github.com/SublyFi/subly-for-agents#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SublyFi/privacy-x402.git",
+    "url": "git+https://github.com/SublyFi/subly-for-agents.git",
     "directory": "sdk"
   },
   "bugs": {
-    "url": "https://github.com/SublyFi/privacy-x402/issues"
+    "url": "https://github.com/SublyFi/subly-for-agents/issues"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

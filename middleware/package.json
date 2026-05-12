@@ -4,14 +4,14 @@
   "description": "Express middleware that serves paid APIs through the Subly privacy-first x402 facilitator. Drop-in replacement for x402 sellers that want their settlements hidden behind a TEE vault.",
   "license": "ISC",
   "author": "SublyFi",
-  "homepage": "https://github.com/SublyFi/privacy-x402#readme",
+  "homepage": "https://github.com/SublyFi/subly-for-agents#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SublyFi/privacy-x402.git",
+    "url": "git+https://github.com/SublyFi/subly-for-agents.git",
     "directory": "middleware"
   },
   "bugs": {
-    "url": "https://github.com/SublyFi/privacy-x402/issues"
+    "url": "https://github.com/SublyFi/subly-for-agents/issues"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

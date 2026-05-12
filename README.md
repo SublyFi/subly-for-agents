@@ -8,18 +8,19 @@ The next release track turns that vault into an Arcium-backed yield vault: clien
 
 ## Status
 
-| Area | Current state |
-| --- | --- |
-| Public demo site | https://www.sublyfi.com/ |
-| Public facilitator | `https://api.demo.sublyfi.com` |
-| Pitch video | https://www.loom.com/share/f2d2482a73824ff9abe1de0186a355f7 |
-| Demo video | https://www.loom.com/share/8ae7523608b34d88abc2aae3a5b5b031 |
-| Project X | https://x.com/subly_fi |
-| Buyer SDK | [`subly402-sdk`](https://www.npmjs.com/package/subly402-sdk) |
-| Seller middleware | [`subly402-express`](https://www.npmjs.com/package/subly402-express) |
-| Active release branch | `feature/arcium` |
+| Area                  | Current state                                                        |
+| --------------------- | -------------------------------------------------------------------- |
+| Public demo site      | https://www.sublyfi.com/                                             |
+| Public facilitator    | `https://api.demo.sublyfi.com`                                       |
+| Pitch video           | https://www.loom.com/share/f2d2482a73824ff9abe1de0186a355f7          |
+| Demo video            | https://www.loom.com/share/8ae7523608b34d88abc2aae3a5b5b031          |
+| Project X             | https://x.com/subly_fi                                               |
+| Buyer SDK             | [`subly402-sdk`](https://www.npmjs.com/package/subly402-sdk)         |
+| Seller middleware     | [`subly402-express`](https://www.npmjs.com/package/subly402-express) |
+| Active release branch | `feature/arcium`                                                     |
 
 **Branch note:** Arcium integration and mainnet release preparation are being developed on `feature/arcium`. That branch keeps the current Devnet/Nitro flow working while adding encrypted accounting, budget grants, withdrawal grants, and release hardening for a mainnet path.
+The currently published `0.1.1` NPM packages cover the Devnet/Nitro x402 flow; Arcium SDK helpers are branch work for the next package release.
 
 Some internal file names and environment variables still use the historical `A402_` prefix. The public project, NPM packages, and integration surface are Subly402.
 
@@ -101,14 +102,14 @@ The most important security assumptions are:
 
 ## Privacy Boundaries
 
-| Data | Public on-chain observer | Parent EC2 / relay | Nitro Enclave | Provider |
-| --- | --- | --- | --- | --- |
-| Buyer deposit into vault | Visible | Visible | Visible | Not needed |
-| Individual buyer-to-provider payment edge | Hidden | Hidden from plaintext TLS | Known | Sees own request |
-| Per-request amount | Hidden in batched settlement | Hidden from plaintext TLS | Known | Sees own price |
-| Provider aggregate payout | Visible | Visible | Visible | Visible |
-| Buyer private balance | Hidden on-chain | Hidden | Known today; moving to Arcium encrypted state on `feature/arcium` | Hidden |
-| Audit trail | Encrypted records | Encrypted records | Encrypts records | Decryptable only with authorized disclosure key |
+| Data                                      | Public on-chain observer     | Parent EC2 / relay        | Nitro Enclave                                                     | Provider                                        |
+| ----------------------------------------- | ---------------------------- | ------------------------- | ----------------------------------------------------------------- | ----------------------------------------------- |
+| Buyer deposit into vault                  | Visible                      | Visible                   | Visible                                                           | Not needed                                      |
+| Individual buyer-to-provider payment edge | Hidden                       | Hidden from plaintext TLS | Known                                                             | Sees own request                                |
+| Per-request amount                        | Hidden in batched settlement | Hidden from plaintext TLS | Known                                                             | Sees own price                                  |
+| Provider aggregate payout                 | Visible                      | Visible                   | Visible                                                           | Visible                                         |
+| Buyer private balance                     | Hidden on-chain              | Hidden                    | Known today; moving to Arcium encrypted state on `feature/arcium` | Hidden                                          |
+| Audit trail                               | Encrypted records            | Encrypted records         | Encrypts records                                                  | Decryptable only with authorized disclosure key |
 
 ## Arcium And Mainnet Preparation
 
@@ -122,7 +123,7 @@ The branch includes:
 - `ClientVaultState`, `DepositCredit`, `BudgetGrant`, and `WithdrawalGrant` flows.
 - `Enc<Mxe>` state for balances, yield, and grant state.
 - `Enc<Shared>` grant outputs for the attested enclave key.
-- SDK helpers for Arcium encryption/decryption in `subly402-sdk/arcium`.
+- SDK helpers for Arcium encryption/decryption, staged for a future `subly402-sdk/arcium` package subpath.
 - Devnet scripts for Arcium config, computation definition initialization, smoke tests, and state sync.
 - Mainnet release hardening around attestation pinning, recovery paths, batch policy, NPM package UX, and deployment repeatability.
 
@@ -132,21 +133,35 @@ The Nitro Enclave still handles real-time HTTP request forwarding in this phase.
 
 Current public Devnet deployment:
 
-| Item | Address |
-| --- | --- |
-| Program ID | `3iusaL6ys79DsbpweDwGhHvtjdnhAhtpyczPtMbu5Mbe` |
-| VaultConfig | `EGJVg1tw3NJQj34Wk1vqSSbXEPd3CaYzmrAzWLwrcm3A` |
+| Item                | Address                                        |
+| ------------------- | ---------------------------------------------- |
+| Program ID          | `3iusaL6ys79DsbpweDwGhHvtjdnhAhtpyczPtMbu5Mbe` |
+| VaultConfig         | `EGJVg1tw3NJQj34Wk1vqSSbXEPd3CaYzmrAzWLwrcm3A` |
 | Vault token account | `41E84Z5PVYCWvZKLcN3vWn7fDku793aTB7pfpyrhCg98` |
-| Vault signer | `4YDcz8mRMGPhZbFiL1RTmXhYNUx7jDsYcU9y5oB9bE2N` |
-| Devnet USDC mint | `3sJgMz6NUf7zmsNfsgnJH6KKWxQaVkz8frAyKnEMAHy2` |
-| Public facilitator | `https://api.demo.sublyfi.com` |
+| Vault signer        | `4YDcz8mRMGPhZbFiL1RTmXhYNUx7jDsYcU9y5oB9bE2N` |
+| Devnet USDC mint    | `3sJgMz6NUf7zmsNfsgnJH6KKWxQaVkz8frAyKnEMAHy2` |
+| Public facilitator  | `https://api.demo.sublyfi.com`                 |
+
+Explorer links:
+
+- Program: https://explorer.solana.com/address/3iusaL6ys79DsbpweDwGhHvtjdnhAhtpyczPtMbu5Mbe?cluster=devnet
+- VaultConfig: https://explorer.solana.com/address/EGJVg1tw3NJQj34Wk1vqSSbXEPd3CaYzmrAzWLwrcm3A?cluster=devnet
+- Vault token account: https://explorer.solana.com/address/41E84Z5PVYCWvZKLcN3vWn7fDku793aTB7pfpyrhCg98?cluster=devnet
+- Devnet USDC mint: https://explorer.solana.com/address/3sJgMz6NUf7zmsNfsgnJH6KKWxQaVkz8frAyKnEMAHy2?cluster=devnet
 
 Previous Devnet vault, kept here so old explorer links and recordings are not confused with the current demo state:
 
-| Item | Address |
-| --- | --- |
-| Old VaultConfig | `6i5SyF8Hx2u5MZW2JgWGhdg5CJsAKeF7UaRAd9bERDDL` |
-| Old Vault token account / ATA | `76YBLxs4EBrvbiP9RT6vH66i6qZb9b67hUdoajjqz5u` |
+| Item                          | Address                                        |
+| ----------------------------- | ---------------------------------------------- |
+| Old VaultConfig               | `6i5SyF8Hx2u5MZW2JgWGhdg5CJsAKeF7UaRAd9bERDDL` |
+| Old Vault token account / ATA | `76YBLxs4EBrvbiP9RT6vH66i6qZb9b67hUdoajjqz5u`  |
+
+Verify the deployed program:
+
+```bash
+solana program show 3iusaL6ys79DsbpweDwGhHvtjdnhAhtpyczPtMbu5Mbe --url devnet
+curl -s https://api.demo.sublyfi.com/v1/attestation | jq .
+```
 
 ## Developer Quickstart
 
@@ -155,6 +170,8 @@ Install the released packages:
 ```bash
 yarn add subly402-sdk subly402-express express
 ```
+
+The snippets below show the integration surface. For a complete runnable Devnet flow, use the demo commands in [Running The Demo Locally](#running-the-demo-locally).
 
 Seller side:
 
@@ -198,6 +215,12 @@ app.use(
     resourceServer
   )
 );
+
+app.get("/weather", (_req, res) => {
+  res.json({ temperature: 72, conditions: "clear" });
+});
+
+app.listen(3000);
 ```
 
 Buyer side:
@@ -205,6 +228,12 @@ Buyer side:
 ```ts
 import { Subly402Client, wrapFetchWithPayment } from "subly402-sdk";
 
+// App-provided values:
+// - signer: a funded Solana signer
+// - policy: Nitro attestation policy for the facilitator
+// - depositIntoSublyVault: transaction helper that deposits USDC into the vault
+// See scripts/demo/subly402-buyer.js and scripts/demo/four-way-common.js for
+// the complete Devnet implementation used by the public demo scripts.
 const client = new Subly402Client({
   signer,
   network: "solana:devnet",
@@ -233,43 +262,75 @@ No Subly API key or provider registration is required for the default flow. Sell
 
 For the side-by-side demo that compares direct x402 with Subly vault settlement:
 
+1. Create `.env.devnet.local` with a funded Devnet wallet and RPC endpoint:
+
+```bash
+export SUBLY402_SOLANA_RPC_URL="https://<your-devnet-rpc>"
+export SUBLY402_SOLANA_WS_URL="wss://<your-devnet-ws>"
+export ANCHOR_PROVIDER_URL="$SUBLY402_SOLANA_RPC_URL"
+export ANCHOR_WALLET="$HOME/.config/solana/<wallet>.json"
+```
+
+2. Build, deploy, bootstrap, and start the local facilitator/watchtower:
+
 ```bash
 yarn install --frozen-lockfile
 npm --prefix middleware run build
 npm --prefix sdk run build
 
+NO_DNA=1 anchor build
+NO_DNA=1 anchor deploy \
+  --provider.cluster "$ANCHOR_PROVIDER_URL" \
+  --provider.wallet "$ANCHOR_WALLET"
+
 yarn devnet:bootstrap
 yarn devnet:start
+```
 
+`yarn devnet:bootstrap` creates `data/devnet-state.json` and `.env.devnet.generated`. `yarn devnet:start` starts the local watchtower and enclave process against Solana Devnet.
+
+3. Run the official x402 direct-payment demo in two terminals:
+
+```bash
 yarn demo:x402-seller
 yarn demo:x402-buyer
+```
 
+4. Run the Subly private-vault demo in two terminals:
+
+```bash
 yarn demo:subly-seller
 yarn demo:subly-buyer
 ```
 
-More detail is in [docs/demo-side-by-side.md](./docs/demo-side-by-side.md) and [docs/quickstart.md](./docs/quickstart.md).
+Expected public chain difference:
+
+- Direct x402: buyer token account pays the seller token account directly.
+- Subly402: buyer token account deposits into the Subly vault; the seller receives a later vault payout after batching.
+
+More detail is in [docs/demo-side-by-side.md](./docs/demo-side-by-side.md), [docs/quickstart.md](./docs/quickstart.md), and [docs/devnet-setup.md](./docs/devnet-setup.md).
 
 ## Repository Map
 
-| Path | Purpose |
-| --- | --- |
-| `programs/subly402_vault` | Anchor vault program |
-| `enclave` | Nitro Enclave facilitator |
-| `parent` | Parent EC2 relay / KMS proxy / snapshot bridge |
-| `watchtower` | Receipt recovery and force-settlement support |
-| `sdk` | Buyer SDK package |
-| `middleware` | Express seller middleware package |
-| `encrypted-ixs` | Arcium circuits on `feature/arcium` |
-| `scripts/demo` | Public demo scripts |
-| `scripts/devnet` | Local Devnet helpers; Arcium scripts are on `feature/arcium` |
-| `scripts/nitro` | Nitro build/provision/deployment helpers |
-| `infra/nitro` | Terraform, systemd, and Nitro deployment assets |
-| `docs` | Architecture, protocol, demo, and deployment references |
+| Path                      | Purpose                                                      |
+| ------------------------- | ------------------------------------------------------------ |
+| `programs/subly402_vault` | Anchor vault program                                         |
+| `enclave`                 | Nitro Enclave facilitator                                    |
+| `parent`                  | Parent EC2 relay / KMS proxy / snapshot bridge               |
+| `watchtower`              | Receipt recovery and force-settlement support                |
+| `sdk`                     | Buyer SDK package                                            |
+| `middleware`              | Express seller middleware package                            |
+| `encrypted-ixs`           | Arcium circuits on `feature/arcium`                          |
+| `scripts/demo`            | Public demo scripts                                          |
+| `scripts/devnet`          | Local Devnet helpers; Arcium scripts are on `feature/arcium` |
+| `scripts/nitro`           | Nitro build/provision/deployment helpers                     |
+| `infra/nitro`             | Terraform, systemd, and Nitro deployment assets              |
+| `docs`                    | Architecture, protocol, demo, and deployment references      |
 
 ## Deployment Runbook
 
 The sections below are the operational deployment guide for maintaining the public Devnet facilitator or running your own Nitro-backed facilitator.
+This section still uses several historical `A402_` variable names because those names exist in the current deployment scripts.
 
 ## Shortest Path
 
