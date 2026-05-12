@@ -4,6 +4,8 @@ Privacy-first x402 payments for Solana agents.
 
 Subly402 lets an AI agent call a paid HTTP API, receive a normal `402 Payment Required` response, and pay with USDC on Solana without creating a direct public buyer-to-provider payment edge. The core product is a vault-backed facilitator: buyers deposit into a shared Solana vault, the facilitator verifies x402-style payment payloads inside an AWS Nitro Enclave, and providers receive batched vault payouts instead of direct transfers from each buyer.
 
+The next release track turns that vault into an Arcium-backed yield vault: client balances, yield, and authorization state move toward encrypted MPC accounting while the Nitro facilitator keeps the real-time x402 request path fast. That work lives on `feature/arcium` so reviewers can inspect it without losing the stable Devnet/Nitro payment flow on `main`.
+
 ## Status
 
 | Area | Current state |
@@ -47,7 +49,7 @@ The first deposit remains public, but individual paid API requests no longer cre
 - `sdk`: buyer SDK published as `subly402-sdk`; wraps `fetch`, verifies facilitator attestation, signs payment payloads, and supports on-demand vault deposits.
 - `middleware`: seller middleware published as `subly402-express`; Express middleware for paid routes with automatic Solana `payTo` derivation.
 - `scripts/demo`: side-by-side demos comparing direct x402 settlement with Subly vault settlement.
-- `encrypted-ixs` and `sdk/src/arcium.ts`: Arcium work on `feature/arcium` for encrypted per-client accounting and grant authorization.
+- On `feature/arcium`: `encrypted-ixs` and `sdk/src/arcium.ts` implement the Arcium yield-vault track for encrypted per-client accounting and grant authorization.
 
 ## Technical Architecture
 
@@ -111,6 +113,8 @@ The most important security assumptions are:
 ## Arcium And Mainnet Preparation
 
 `feature/arcium` is the active branch for the next release track. The goal is to reduce how much long-lived accounting state the TEE must hold by moving per-client balances and authorization state into Arcium MPC.
+
+Switch to `feature/arcium` to inspect the Arcium-specific files. The main branch intentionally keeps the stable Devnet/Nitro payment path as the default entry point while documenting the active Arcium and mainnet-readiness work.
 
 The branch includes:
 
@@ -258,7 +262,7 @@ More detail is in [docs/demo-side-by-side.md](./docs/demo-side-by-side.md) and [
 | `middleware` | Express seller middleware package |
 | `encrypted-ixs` | Arcium circuits on `feature/arcium` |
 | `scripts/demo` | Public demo scripts |
-| `scripts/devnet` | Local Devnet and Arcium helpers |
+| `scripts/devnet` | Local Devnet helpers; Arcium scripts are on `feature/arcium` |
 | `scripts/nitro` | Nitro build/provision/deployment helpers |
 | `infra/nitro` | Terraform, systemd, and Nitro deployment assets |
 | `docs` | Architecture, protocol, demo, and deployment references |
