@@ -282,6 +282,11 @@ function decryptRecordWithSecret(
     const sender = new PublicKey(senderBytes);
 
     // Amount is LE u64 in first 8 bytes, rest is zero padding
+    for (let i = 8; i < amountBytes.length; i++) {
+      if (amountBytes[i] !== 0) {
+        return null;
+      }
+    }
     const amount = Number(Buffer.from(amountBytes).readBigUInt64LE(0));
 
     return {
