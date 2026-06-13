@@ -1,3 +1,6 @@
+# New Repo
+https://github.com/SublyFi/subly-payment-protocol
+
 # Subly402
 
 Privacy-first x402 payments for Solana agents.
