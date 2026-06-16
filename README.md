@@ -1,3 +1,6 @@
+# Subly update video since our hackathon submission
+https://www.loom.com/share/34b86a80e1344d898805f5e09a0c5f0b
+
 # New Repo
 https://github.com/SublyFi/subly-payment-protocol
 
